@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}{{ category }} &mdash; {{ config.site_name }}{% endblock %}
+{% block body_class %}category-page{% endblock %}
+
+{% block content %}
+<div class="page-layout">
+  <aside class="sidebar">
+    <div>
+      <p class="sidebar-section-title">Sections</p>
+      <ul class="sidebar-list">
+        <li><a href="{{ site_root }}archive.html">All Papers</a><span class="sidebar-count">{{ all_posts | length }}</span></li>
+        {% for cat, items in all_categories.items() %}
+        <li><a href="{{ site_root }}categories/{{ cat | slugify }}.html">{{ cat }}</a><span class="sidebar-count">{{ items | length }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <p class="sidebar-section-title">Topics</p>
+      <ul class="sidebar-list">
+        {% for t, items in all_tags.items() | sort %}
+        <li><a href="{{ site_root }}tags/{{ t | slugify }}.html">{{ t }}</a><span class="sidebar-count">{{ items | length }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </aside>
+
+  <main>
+    <div class="page-heading">
+      <h1 class="page-heading-title"><em>{{ category }}</em></h1>
+      <p class="page-heading-meta">{{ posts | length }} papers</p>
+    </div>
+    <div class="compact-list">
+      {% for post in posts %}
+      <article class="compact-item">
+        {% if post.banner %}
+        <div class="compact-thumb">
+          <img src="{{ site_root }}{{ post.banner }}" alt="">
+        </div>
+        {% endif %}
+        <div class="compact-content">
+          <h3 class="compact-title"><a href="{{ site_root }}{{ post.url }}">{{ post.title }}</a></h3>
+          {% if post.authors %}
+          <div class="compact-authors">{% for a in post.authors %}{{ a.name }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+          {% endif %}
+          {% if post.abstract %}<p class="compact-abstract">{{ post.abstract | truncate_words(35) }}</p>{% endif %}
+          <div class="compact-footer">
+            <span>{{ post.date | date_format("%Y-%m-%d") }}</span>
+            {% for tag in post.tags[:3] %}
+            <a class="tag-link" href="{{ site_root }}tags/{{ tag | slugify }}.html">{{ tag }}</a>
+            {% endfor %}
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </main>
+</div>
+{% endblock %}

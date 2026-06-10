@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.journal.name }} — {{ config.site_subtitle }}{% endblock %}
+{% block body_class %}index-page{% endblock %}
+
+{% block content %}
+
+<div class="page-layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+
+    <div>
+      <p class="sidebar-section-title">Sections</p>
+      <ul class="sidebar-list">
+        <li>
+          <a href="{{ site_root }}archive.html">All Papers</a>
+          <span class="sidebar-count">{{ all_posts | length }}</span>
+        </li>
+        {% for cat, items in all_categories.items() %}
+        <li>
+          <a href="{{ site_root }}categories/{{ cat | slugify }}.html">{{ cat }}</a>
+          <span class="sidebar-count">{{ items | length }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <p class="sidebar-section-title">Topics</p>
+      <ul class="sidebar-list">
+        {% for tag, items in all_tags.items() | sort %}
+        <li>
+          <a href="{{ site_root }}tags/{{ tag | slugify }}.html">{{ tag }}</a>
+          <span class="sidebar-count">{{ items | length }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      <a href="{{ site_root }}tags/all.html" class="sidebar-footer-link">All topics &rarr;</a>
+    </div>
+
+    <div>
+      <p class="sidebar-section-title">Archive</p>
+      <ul class="sidebar-list">
+        {% for y, count in archive_years.items() %}
+        <li>
+          <span style="font-size:0.8rem;color:#555;">{{ y }}</span>
+          <span class="sidebar-count">{{ count }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <p class="sidebar-section-title">Subscribe</p>
+      <a href="{{ site_root }}feed.xml" class="sidebar-footer-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
+        RSS Feed
+      </a>
+    </div>
+
+  </aside>
+
+  <!-- Main Content -->
+  <main>
+
+    {% if posts %}
+    {% set featured = posts | first %}
+    <section class="featured-article">
+      <div class="featured-label">Featured Paper</div>
+      <h2 class="featured-title">
+        <a href="{{ site_root }}{{ featured.url }}">{{ featured.title }}</a>
+      </h2>
+      <div class="featured-authors">
+        {% if featured.authors %}
+        {% for author in featured.authors %}{{ author.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+        {% endif %}
+        &middot;
+        {% if featured.date %}{{ featured.date | date_format("%B %Y") }}{% endif %}
+        {% if featured.doi %} &middot; DOI: {{ featured.doi }}{% endif %}
+      </div>
+      {% if featured.abstract %}
+      <p class="featured-abstract">{{ featured.abstract | truncate_words(50) }}</p>
+      {% endif %}
+      {% if featured.keywords %}
+      <div class="featured-keywords">
+        <strong>Keywords:</strong>
+        {% for kw in featured.keywords %}{{ kw }}{% if not loop.last %}, {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+      <a href="{{ site_root }}{{ featured.url }}" class="btn btn-sm">Read Paper</a>
+    </section>
+    {% endif %}
+
+    <!-- Recent Papers -->
+    <div class="section-header">
+      <span class="section-label">Recent Papers</span>
+      <a href="{{ site_root }}archive.html" class="section-more">View all &rarr;</a>
+    </div>
+
+    <div class="article-list">
+      {% for post in posts %}
+      {% if not loop.first or posts | length == 1 %}
+      <article class="article-item">
+        <div class="article-item-category">{{ post.category }}</div>
+        <h3 class="article-item-title">
+          <a href="{{ site_root }}{{ post.url }}">{{ post.title }}</a>
+        </h3>
+        {% if post.authors %}
+        <div class="article-item-authors">
+          {% for author in post.authors %}{{ author.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+        {% if post.abstract %}
+        <p class="article-item-abstract">{{ post.abstract | truncate_words(30) }}</p>
+        {% endif %}
+        <div class="article-item-meta">
+          <span>{{ post.date | date_format("%d %B %Y") }}</span>
+          {% if post.tags %}
+          <span class="article-item-tags">
+            {% for tag in post.tags %}
+            <a class="tag-link" href="{{ site_root }}tags/{{ tag | slugify }}.html">{{ tag }}</a>
+            {% endfor %}
+          </span>
+          {% endif %}
+        </div>
+      </article>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+  </main>
+
+</div>
+
+{% endblock %}

@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="{{ config.language or 'zh-CN' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{{ config.site_name }}{% endblock %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock %}">
+
+  {% if config.katex.enabled %}
+  <link rel="stylesheet" href="{{ config.katex.css }}">
+  <script defer src="{{ config.katex.js }}"></script>
+  <script defer src="{{ config.katex.auto_render }}"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false},
+        {left: '\\[', right: '\\]', display: true},
+        {left: '\\(', right: '\\)', display: false}
+      ],
+      throwOnError: false
+    });"></script>
+  {% endif %}
+
+  <link rel="stylesheet" href="{{ site_root }}static/css/style.css">
+  <link rel="alternate" type="application/rss+xml" title="{{ config.site_name }}" href="{{ site_root }}feed.xml">
+
+  <!-- Fonts: Playfair Display + Crimson Text + IBM Plex Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400;1,600&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,500;0,700;1,500&display=swap" rel="stylesheet">
+
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+
+  <!-- Search Modal -->
+  <div class="search-overlay" id="searchOverlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="Search papers, topics, authors..." autocomplete="off">
+        <button class="search-close" id="searchClose">&times;</button>
+      </div>
+      <div class="search-results" id="searchResults"></div>
+      <div class="search-status" id="searchStatus">Type to search</div>
+    </div>
+  </div>
+
+  <!-- Masthead -->
+  <header class="site-masthead">
+    <a href="{{ site_root }}index.html" class="masthead-journal-name">{{ config.journal.name }}</a>
+    <div class="masthead-subtitle">{{ config.site_subtitle }}</div>
+    <div class="masthead-meta">{{ config.journal.volume_prefix }} I {{ config.journal.issue_prefix }} 1 &middot; Established {{ now.year if now else '2024' }}</div>
+  </header>
+
+  <!-- Navigation -->
+  <nav class="site-nav">
+    <div class="nav-inner">
+      <ul class="nav-links">
+        <li><a href="{{ site_root }}index.html">Home</a></li>
+        <li><a href="{{ site_root }}archive.html">Papers</a></li>
+        <li><a href="{{ site_root }}tags/all.html">Topics</a></li>
+        <li><a href="{{ site_root }}feed.xml">RSS</a></li>
+      </ul>
+      <div class="nav-search" id="searchTrigger">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        Search
+      </div>
+    </div>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div>
+        <div class="footer-brand-name">{{ config.journal.name }}</div>
+        <p class="footer-brand-desc">{{ config.site_subtitle }}</p>
+      </div>
+      <div class="footer-columns">
+        <div>
+          <p class="footer-col-title">Navigation</p>
+          <ul class="footer-col-links">
+            <li><a href="{{ site_root }}index.html">Home</a></li>
+            <li><a href="{{ site_root }}archive.html">Papers</a></li>
+            <li><a href="{{ site_root }}tags/all.html">Topics</a></li>
+            <li><a href="{{ site_root }}feed.xml">RSS</a></li>
+          </ul>
+        </div>
+        <div>
+          <p class="footer-col-title">Resources</p>
+          <ul class="footer-col-links">
+            <li><a href="#">BibTeX Library</a></li>
+            <li><a href="#">Style Guide</a></li>
+            <li><a href="#">Privacy Policy</a></li>
+          </ul>
+        </div>
+        <div>
+          <p class="footer-col-title">Connect</p>
+          <ul class="footer-col-links">
+            <li><a href="#">GitHub</a></li>
+            <li><a href="#">LinkedIn</a></li>
+            <li><a href="#">Email</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <p class="footer-bottom">&copy; {{ config.author }} &mdash; {{ config.journal.name }} &middot; All papers are &copy; the author. ISSN {{ config.journal.issn }}.</p>
+  </footer>
+
+  <script id="search-data" type="application/json">{{ search_json | safe }}</script>
+  <script>
+    (function() {
+      var overlay = document.getElementById('searchOverlay');
+      var trigger = document.getElementById('searchTrigger');
+      var closeBtn = document.getElementById('searchClose');
+      var input = document.getElementById('searchInput');
+      var results = document.getElementById('searchResults');
+      var status = document.getElementById('searchStatus');
+      var indexData = null;
+
+      function openSearch() {
+        overlay.classList.add('active');
+        input.focus();
+        loadIndex();
+      }
+
+      function closeSearch() {
+        overlay.classList.remove('active');
+        input.value = '';
+        results.innerHTML = '';
+        status.textContent = 'Type to search';
+      }
+
+      function loadIndex() {
+        if (indexData) return;
+        var el = document.getElementById('search-data');
+        if (el && el.textContent) {
+          try {
+            indexData = JSON.parse(el.textContent);
+            status.textContent = indexData.length + ' papers indexed';
+            return;
+          } catch(e) {}
+        }
+        // Fallback: try XHR for server-hosted sites
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '{{ site_root }}search.json', true);
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === 4 && xhr.status === 200) {
+            try {
+              indexData = JSON.parse(xhr.responseText);
+              status.textContent = indexData.length + ' papers indexed';
+              performSearch();
+            } catch(e) {
+              status.textContent = 'Error loading index';
+            }
+          }
+        };
+        xhr.send();
+      }
+
+      function escapeRegExp(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
+      function highlight(text, terms) {
+        if (!terms.length) return text;
+        var pattern = new RegExp('(' + terms.map(escapeRegExp).join('|') + ')', 'gi');
+        return text.replace(pattern, '<span class="highlight">$1</span>');
+      }
+
+      function getSnippet(content, terms) {
+        if (!terms.length) return content.slice(0, 180) + '...';
+        var lower = content.toLowerCase();
+        var bestPos = -1;
+        for (var i = 0; i < terms.length; i++) {
+          var pos = lower.indexOf(terms[i].toLowerCase());
+          if (pos !== -1) { bestPos = pos; break; }
+        }
+        if (bestPos === -1) return content.slice(0, 180) + '...';
+        var start = Math.max(0, bestPos - 60);
+        var end = Math.min(content.length, bestPos + 120);
+        var snippet = content.slice(start, end);
+        if (start > 0) snippet = '...' + snippet;
+        if (end < content.length) snippet = snippet + '...';
+        return snippet;
+      }
+
+      function score(post, terms) {
+        var s = 0;
+        for (var i = 0; i < terms.length; i++) {
+          var t = terms[i].toLowerCase();
+          if (post.title.toLowerCase().indexOf(t) !== -1) s += 10;
+          if (post.abstract.toLowerCase().indexOf(t) !== -1) s += 5;
+          for (var j = 0; j < post.tags.length; j++) {
+            if (post.tags[j].toLowerCase().indexOf(t) !== -1) s += 6;
+          }
+          for (var j = 0; j < post.authors.length; j++) {
+            if (post.authors[j].toLowerCase().indexOf(t) !== -1) s += 4;
+          }
+          if (post.content.toLowerCase().indexOf(t) !== -1) s += 2;
+          if (post.category.toLowerCase().indexOf(t) !== -1) s += 3;
+        }
+        return s;
+      }
+
+      function performSearch() {
+        var query = input.value.trim();
+        if (!query || !indexData) {
+          results.innerHTML = '';
+          if (indexData) status.textContent = indexData.length + ' papers indexed';
+          return;
+        }
+
+        var terms = query.split(/\s+/).filter(function(t) { return t.length > 0; });
+        if (!terms.length) return;
+
+        var scored = indexData.map(function(post) {
+          return { post: post, score: score(post, terms) };
+        }).filter(function(item) {
+          return item.score > 0;
+        }).sort(function(a, b) {
+          return b.score - a.score;
+        });
+
+        status.textContent = scored.length + ' results for "' + query + '"';
+
+        if (scored.length === 0) {
+          results.innerHTML = '<div class="search-empty">No papers found.</div>';
+          return;
+        }
+
+        var html = '';
+        for (var i = 0; i < scored.length && i < 20; i++) {
+          var post = scored[i].post;
+          var snippet = getSnippet(post.abstract || post.content, terms);
+          html += '<a class="search-result-item" href="{{ site_root }}' + post.url + '">' +
+            '<div class="search-result-title">' + highlight(post.title, terms) + '</div>' +
+            '<div class="search-result-meta">' + post.date + ' · ' + (post.authors.join(', ') || 'Unknown') + ' · ' + post.category + '</div>' +
+            '<div class="search-result-snippet">' + highlight(snippet, terms) + '</div>' +
+            '</a>';
+        }
+        results.innerHTML = html;
+      }
+
+      trigger.addEventListener('click', openSearch);
+      closeBtn.addEventListener('click', closeSearch);
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) closeSearch();
+      });
+      input.addEventListener('input', performSearch);
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          openSearch();
+        }
+        if (e.key === 'Escape') {
+          closeSearch();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

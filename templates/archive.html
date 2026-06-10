@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}All Papers &mdash; {{ config.site_name }}{% endblock %}
+{% block body_class %}archive-page{% endblock %}
+
+{% block content %}
+<div class="page-layout">
+  <aside class="sidebar">
+    <div>
+      <p class="sidebar-section-title">Sections</p>
+      <ul class="sidebar-list">
+        <li><a href="{{ site_root }}archive.html">All Papers</a><span class="sidebar-count">{{ all_posts | length }}</span></li>
+        {% for cat, items in all_categories.items() %}
+        <li><a href="{{ site_root }}categories/{{ cat | slugify }}.html">{{ cat }}</a><span class="sidebar-count">{{ items | length }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <p class="sidebar-section-title">Topics</p>
+      <ul class="sidebar-list">
+        {% for t, items in all_tags.items() | sort %}
+        <li><a href="{{ site_root }}tags/{{ t | slugify }}.html">{{ t }}</a><span class="sidebar-count">{{ items | length }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </aside>
+
+  <main>
+    <div class="page-heading">
+      <h1 class="page-heading-title">All Papers</h1>
+      <p class="page-heading-meta">{{ all_posts | length }} papers in total</p>
+    </div>
+    {% for month, posts in archives.items() %}
+    <section class="archive-group">
+      <h2 class="archive-group-title">{{ month }}</h2>
+      <ul class="archive-list">
+        {% for post in posts %}
+        <li>
+          <span class="archive-date">{{ post.date | date_format("%d") }}</span>
+          <a href="{{ site_root }}{{ post.url }}">{{ post.title }}</a>
+          {% if post.category %}<span class="archive-cat">{{ post.category }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endfor %}
+  </main>
+</div>
+{% endblock %}

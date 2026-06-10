@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}All Topics &mdash; {{ config.site_name }}{% endblock %}
+{% block body_class %}tags-page{% endblock %}
+
+{% block content %}
+<div class="page-layout">
+  <aside class="sidebar">
+    <div>
+      <p class="sidebar-section-title">Sections</p>
+      <ul class="sidebar-list">
+        <li><a href="{{ site_root }}archive.html">All Papers</a><span class="sidebar-count">{{ all_posts | length }}</span></li>
+        {% for cat, items in all_categories.items() %}
+        <li><a href="{{ site_root }}categories/{{ cat | slugify }}.html">{{ cat }}</a><span class="sidebar-count">{{ items | length }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </aside>
+
+  <main>
+    <div class="page-heading">
+      <h1 class="page-heading-title">All Topics</h1>
+      <p class="page-heading-meta">{{ all_tags | length }} topics</p>
+    </div>
+    <div class="tags-grid">
+      {% for tag, posts in all_tags.items() | sort %}
+      <div class="tag-group">
+        <div class="tag-group-title">
+          <a href="{{ site_root }}tags/{{ tag | slugify }}.html">{{ tag }}</a>
+          <span class="tag-count">{{ posts | length }}</span>
+        </div>
+        <ul class="tag-group-list">
+          {% for post in posts[:5] %}
+          <li>
+            <a href="{{ site_root }}{{ post.url }}">{{ post.title }}</a>
+            <span>{{ post.date | date_format("%Y-%m-%d") }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+  </main>
+</div>
+{% endblock %}

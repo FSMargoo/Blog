@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}{{ post.title }} &mdash; {{ config.site_name }}{% endblock %}
+{% block description %}{{ post.abstract | truncate_words(30) }}{% endblock %}
+{% block body_class %}paper-page{% endblock %}
+
+{% block content %}
+
+<div class="article-detail">
+
+  <article>
+
+    <header class="article-header">
+      <div class="article-category">{{ post.category }}</div>
+
+      <h1 class="article-title">{{ post.title }}</h1>
+
+      {% if post.authors %}
+      <div class="article-authors">
+        {% for author in post.authors %}
+        <span class="author">
+          <span class="author-name">{{ author.name }}</span>
+          {% if author.affiliation %}<sup class="author-affil">{{ loop.index }}</sup>{% endif %}
+          {% if not loop.last %}, {% endif %}
+        </span>
+        {% endfor %}
+      </div>
+
+      <div class="article-affiliations">
+        {% for author in post.authors %}
+          {% if author.affiliation %}
+          <div>
+            <sup>{{ loop.index }}</sup> {{ author.affiliation }}
+            {% if author.email %}&lt;{{ author.email }}&gt;{% endif %}
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="article-meta">
+        {% if post.date %}Received {{ post.date | date_format("%d %B %Y") }}{% endif %}
+        {% if post.updated %} &middot; Revised {{ post.updated | date_format("%d %B %Y") }}{% endif %}
+      </div>
+    </header>
+
+    {% if post.abstract %}
+    <section class="abstract-block">
+      <div class="abstract-label">Abstract</div>
+      <p class="abstract-text">{{ post.abstract }}</p>
+      {% if post.keywords %}
+      <div class="keywords-line">
+        <strong>Keywords:</strong>
+        {% for kw in post.keywords %}{{ kw }}{% if not loop.last %}, {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    {% if post.toc and post.toc | length > 50 %}
+    <nav class="article-toc">
+      <details open>
+        <summary>Contents</summary>
+        {{ post.toc | safe }}
+      </details>
+    </nav>
+    {% endif %}
+
+    <div class="article-body">
+      {{ post.body | safe }}
+    </div>
+
+    {% if post.tags %}
+    <footer class="article-footer-tags">
+      <strong>Tags:</strong>
+      {% for tag in post.tags %}
+      <a class="tag-link" href="{{ site_root }}tags/{{ tag | slugify }}.html">{{ tag }}</a>
+      {% endfor %}
+    </footer>
+    {% endif %}
+
+    <nav class="article-nav">
+      {% if current_index + 1 < all_posts | length %}
+      <a class="prev-article" href="{{ site_root }}{{ all_posts[current_index + 1].url }}">
+        <span class="nav-label">&larr; Previous</span>
+        <span class="nav-title">{{ all_posts[current_index + 1].title }}</span>
+      </a>
+      {% endif %}
+      {% if current_index > 0 %}
+      <a class="next-article" href="{{ site_root }}{{ all_posts[current_index - 1].url }}">
+        <span class="nav-label">Next &rarr;</span>
+        <span class="nav-title">{{ all_posts[current_index - 1].title }}</span>
+      </a>
+      {% endif %}
+    </nav>
+
+  </article>
+
+</div>
+
+{% endblock %}
