@@ -4,3 +4,4 @@ Markdown>=3.5.0
 python-frontmatter>=1.0.0
 pymdown-extensions>=10.0
 Pygments>=2.16.0
+textual>=0.52.0

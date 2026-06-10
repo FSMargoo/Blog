@@ -9,6 +9,9 @@ Nature, and Science typography.
 ```
 .
 ├── build.py              # Build script
+├── create_article.py     # Interactive article creation wizard (TUI)
+├── serve.py              # Local preview server with live-reload
+├── deploy.py             # Deploy to GitHub Pages
 ├── config.yaml           # Site configuration
 ├── requirements.txt      # Python dependencies
 ├── content/              # Source content (markdown)
@@ -26,10 +29,19 @@ Nature, and Science typography.
 
 ```
 pip install -r requirements.txt
+
+# Create a new article (interactive wizard)
+python create_article.py
+
+# Build the site
 python build.py
+
+# Preview locally (build + serve, auto-rebuild on changes)
+python serve.py -w
 ```
 
-Output is written to `public/`. Open `public/index.html` in a browser to preview.
+Output is written to `public/`. The `serve.py` command starts a local HTTP server
+so you can preview the full site at `http://localhost:8000`.
 
 ## Configuration
 
@@ -316,6 +328,117 @@ Template variables available in all contexts:
 
 Additional variables are available in specific templates (e.g. `post` in
 `post.html`, `posts` in `tag.html`).
+
+## Article Creation Wizard
+
+`create_article.py` is an interactive TUI (Terminal User Interface) wizard that
+guides you through creating a new article step by step. It ensures all
+frontmatter fields are correctly filled in before writing the `.md` file.
+
+```
+python create_article.py
+```
+
+### Wizard Steps
+
+The wizard walks through 7 screens:
+
+| Step | Screen | What you set |
+|------|--------|-------------|
+| 1 | Title & Category | Title (required), URL slug (auto-generated), category |
+| 2 | Metadata | Date (defaults to today), updated date, banner image, DOI, draft toggle |
+| 3 | Authors | Add/remove authors with name, affiliation, and email |
+| 4 | Abstract | Multi-line Markdown abstract |
+| 5 | Keywords & Tags | Comma-separated keywords and tags, with live chip preview |
+| 6 | Bibliography | Add/remove references (citation key + text) |
+| 7 | Review & Save | Full YAML frontmatter preview, then save to `content/posts/` |
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+N` | Next step |
+| `Ctrl+P` | Previous step |
+| `Ctrl+Q` | Quit (discard) |
+| Click buttons | Navigate with mouse |
+
+### Generated File
+
+The wizard writes to `content/posts/<slug>.md` with a complete YAML frontmatter
+and a body template skeleton:
+
+```markdown
+---
+title: "My Article Title"
+date: "2026-06-10"
+category: Research
+authors:
+  - name: "Author Name"
+    affiliation: "University"
+    email: "author@example.edu"
+abstract: |
+  Abstract text goes here…
+keywords: ["keyword1", "keyword2"]
+tags: ["Tag A"]
+slug: my-article-title
+---
+
+## 1. Introduction
+
+...
+
+## 2. Background
+
+...
+
+...
+```
+
+If the slug already exists, the wizard warns you before overwriting.
+
+## Local Preview Server
+
+`serve.py` builds the site and starts a local HTTP server so you can preview
+the blog in a browser before deploying.
+
+```
+python serve.py                 # build + serve on port 8000
+python serve.py --no-build      # skip build, serve existing public/
+python serve.py -w              # build + serve + auto-rebuild on changes
+python serve.py -p 3000 -w -v   # custom port, watch, verbose logging
+```
+
+### Options
+
+| Flag | Purpose |
+|------|---------|
+| `-p, --port PORT` | Listen on PORT (default: 8000) |
+| `-b, --bind ADDR` | Bind address (default: 127.0.0.1) |
+| `--no-build` | Skip `build.py`, serve existing `public/` |
+| `-w, --watch` | Watch `content/`, `templates/`, `static/`, `config.yaml` for changes and auto-rebuild |
+| `-v, --verbose` | Log every HTTP request (default: errors and redirects only) |
+
+### How it works
+
+1. Runs `python build.py` to generate `public/` (unless `--no-build`).
+2. Starts a `ThreadingHTTPServer` rooted at `public/`.
+3. Prints the local URL — open `http://localhost:8000` in a browser.
+4. If `--watch` is set, polls source directories every 1.5 seconds. When a
+   file changes, it re-runs the build automatically.
+5. Press `Ctrl+C` to stop.
+
+### Typical workflow
+
+```bash
+# Start the preview server with auto-rebuild
+python serve.py -w
+
+# In another terminal, create or edit articles, then rebuild:
+python create_article.py       # create a new post
+# ... or edit content/posts/*.md directly — the watcher rebuilds for you
+
+# Refresh the browser to see changes immediately.
+```
 
 ## Deployment
 
