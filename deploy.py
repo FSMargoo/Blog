@@ -6,8 +6,8 @@ Clones (or updates) the Pages repository, copies the public/ output into it,
 preserves CNAME, commits, and pushes.
 
 Usage:
-    python deploy.py              # build + deploy
-    python deploy.py --no-build   # deploy without rebuilding
+    python3 deploy.py              # build + deploy
+    python3 deploy.py --no-build   # deploy without rebuilding
 """
 
 import argparse
@@ -34,13 +34,13 @@ def run(cmd, cwd=None):
 
 def build():
     print("[1/3] Building blog...")
-    run("python build.py", cwd=ROOT)
+    run("python3 build.py", cwd=ROOT)
 
 
 def clone_or_pull():
     if PAGES_DIR.exists():
         print("[2/3] Pulling latest from Pages repo...")
-        run("git pull origin main", cwd=PAGES_DIR)
+        run("git pull origin master", cwd=PAGES_DIR)
     else:
         print("[2/3] Cloning Pages repo...")
         run(f'git clone {PAGES_REPO} "{PAGES_DIR}"')
@@ -72,9 +72,10 @@ def sync():
             shutil.copy2(item, dst)
 
     # Commit and push
+    run("git branch -M master", cwd=PAGES_DIR)
     run("git add -A", cwd=PAGES_DIR)
     run('git commit -m "Deploy"', cwd=PAGES_DIR)
-    run("git push origin main", cwd=PAGES_DIR)
+    run("git push -f origin master", cwd=PAGES_DIR)
 
     print("\nDeployed to https://fsmargoo.github.io")
 

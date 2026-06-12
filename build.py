@@ -4,10 +4,14 @@ LaTeX-style Academic Blog Generator
 Compile Markdown to beautiful, LaTeX-level HTML.
 """
 
+import hashlib
+import json
 import os
+import subprocess
 import sys
 import re
 import shutil
+import uuid
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -69,6 +73,9 @@ class BlogBuilder:
             },
         )
 
+        self.cache_file = self.root / ".build_cache.json"
+        self._cache = self._load_cache()
+
         self.posts = []
         self.pages = []
         self.tags = defaultdict(list)
@@ -100,6 +107,15 @@ class BlogBuilder:
         text = re.sub(r"[^\w\s-]", "", text).strip().lower()
         return re.sub(r"[-\s]+", "-", text)
 
+    def _article_id(self, path: Path) -> str:
+        """Generate a short, stable English UUID from the file path.
+
+        Uses UUID5 with the relative path as input — same file always yields
+        the same ID, different files never collide. Returns 8 hex chars.
+        """
+        rel = str(path.relative_to(self.content_dir))
+        return uuid.uuid5(uuid.NAMESPACE_URL, rel).hex[:8]
+
     def _ensure_dir(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +133,434 @@ class BlogBuilder:
                 shutil.rmtree(dst_assets)
             shutil.copytree(src_assets, dst_assets)
 
+    # ------------------------------------------------------------------ #
+    # PDF generation — cache, LaTeX conversion, xelatex compilation
+    # ------------------------------------------------------------------ #
+    def _load_cache(self):
+        if self.cache_file.exists():
+            try:
+                return json.loads(self.cache_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
+
+    def _save_cache(self):
+        self.cache_file.write_text(
+            json.dumps(self._cache, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _content_hash(self, path: Path) -> str:
+        """MD5 of the raw markdown file content."""
+        return hashlib.md5(path.read_bytes()).hexdigest()
+
+    def _should_rebuild_pdf(self, post: dict) -> bool:
+        """Check whether the PDF needs to be rebuilt (source changed)."""
+        key = str(post["path"].relative_to(self.root))
+        new_hash = self._content_hash(post["path"])
+        old_hash = self._cache.get(key)
+        if old_hash != new_hash:
+            self._cache[key] = new_hash
+            return True
+        return False
+
+    def _markdown_to_latex(self, content: str) -> str:
+        """Convert markdown content to LaTeX body.
+
+        Handles: headings, bold/italic, code blocks, math (pass-through),
+        lists, blockquotes, links, images, horizontal rules.
+        """
+        lines = content.split("\n")
+        out = []
+        in_code = False
+        code_lang = ""
+        in_list = None   # 'ul' or 'ol'
+        list_depth = 0
+        in_quote = False
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+
+            # Fenced code blocks
+            fm = re.match(r"^(`{3,}|~{3,})(.*)$", line)
+            if fm:
+                if not in_code:
+                    in_code = True
+                    code_lang = fm.group(2).strip()
+                    out.append("\\begin{codeverb}")
+                    i += 1
+                    continue
+                else:
+                    in_code = False
+                    out.append("\\end{codeverb}")
+                    i += 1
+                    continue
+
+            if in_code:
+                # Escape LaTeX special chars in verbatim
+                out.append(line)
+                i += 1
+                continue
+
+            # Blank lines
+            if not line.strip():
+                if in_list and i + 1 < len(lines) and not re.match(r"^(\s*)[-*+]|\d+\.", lines[i + 1]):
+                    # End list
+                    out.append("\\end{" + in_list + "}")
+                    in_list = None
+                if in_quote and (i + 1 >= len(lines) or not lines[i + 1].startswith(">")):
+                    out.append("\\end{quote}")
+                    in_quote = False
+                out.append("")
+                i += 1
+                continue
+
+            # Math display blocks: $$...$$ → \[...\] (but skip if already \begin{...})
+            if line.strip().startswith("$$"):
+                math_lines = [line]
+                if "$$" not in line or line.count("$$") < 2:
+                    while i + 1 < len(lines):
+                        i += 1
+                        math_lines.append(lines[i])
+                        if "$$" in lines[i]:
+                            break
+                math_block = "\n".join(math_lines)
+                math_block = math_block.replace("$$", "", 1)
+                math_block = re.sub(r"\$\$$", "", math_block)
+                inner = math_block.strip()
+                # If inner already has \begin{equation}/\begin{align}, use as-is
+                if re.match(r"\\begin\{(equation|align)", inner):
+                    out.append(inner)
+                else:
+                    out.append("\\[")
+                    out.append(inner)
+                    out.append("\\]")
+                i += 1
+                continue
+
+            if line.strip() == "---" or line.strip() == "***":
+                out.append("\\vspace{4pt}")
+                out.append("\\rule{\\textwidth}{0.5pt}")
+                out.append("\\vspace{4pt}")
+                i += 1
+                continue
+
+            # Headings
+            hm = re.match(r"^(#{1,6})\s+(.+)$", line)
+            if hm:
+                level = len(hm.group(1))
+                title = hm.group(2).strip()
+                title = self._latex_escape(title)
+                if level == 1:
+                    out.append(f"\\section{{{title}}}")
+                elif level == 2:
+                    out.append(f"\\subsection{{{title}}}")
+                elif level == 3:
+                    out.append(f"\\subsubsection{{{title}}}")
+                else:
+                    out.append(f"\\paragraph{{{title}}}")
+                i += 1
+                continue
+
+            # Blockquotes
+            if line.startswith(">"):
+                if not in_quote:
+                    out.append("\\begin{quote}")
+                    in_quote = True
+                text = re.sub(r"^>\s?", "", line)
+                text = self._latex_inline(text)
+                out.append(text)
+                i += 1
+                continue
+            elif in_quote:
+                out.append("\\end{quote}")
+                in_quote = False
+
+            # Unordered list
+            ulm = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
+            if ulm:
+                if in_list != "itemize":
+                    if in_list:
+                        out.append("\\end{" + in_list + "}")
+                    out.append("\\begin{itemize}")
+                    in_list = "itemize"
+                text = self._latex_inline(ulm.group(2))
+                out.append(f"\\item {text}")
+                i += 1
+                continue
+
+            # Ordered list
+            olm = re.match(r"^(\s*)\d+\.\s+(.+)$", line)
+            if olm:
+                if in_list != "enumerate":
+                    if in_list:
+                        out.append("\\end{" + in_list + "}")
+                    out.append("\\begin{enumerate}")
+                    in_list = "enumerate"
+                text = self._latex_inline(olm.group(2))
+                out.append(f"\\item {text}")
+                i += 1
+                continue
+
+            # Regular paragraph
+            if in_list:
+                out.append("\\end{" + in_list + "}")
+                in_list = None
+
+            text = self._latex_inline(line)
+            if text.strip():
+                out.append(text)
+            else:
+                out.append("")
+            i += 1
+
+        # Close any open environments
+        if in_code:
+            out.append("\\end{codeverb}")
+        if in_list:
+            out.append("\\end{" + in_list + "}")
+        if in_quote:
+            out.append("\\end{quote}")
+
+        return "\n".join(out)
+
+    def _latex_inline(self, text: str) -> str:
+        """Convert inline markdown to LaTeX."""
+        # Protect math first
+        math_spans = []
+        def save_math(m):
+            math_spans.append(m.group(0))
+            return f"<MATH{len(math_spans)-1}>"
+        text = re.sub(r"\$[^$]+\$", save_math, text)
+        text = re.sub(r"\\\(.+?\\\)", save_math, text)
+
+        # Bold
+        text = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", text)
+        # Italic
+        text = re.sub(r"\*(.+?)\*", r"\\textit{\1}", text)
+        # Inline code
+        text = re.sub(r"`([^`]+)`", r"\\texttt{\1}", text)
+        # Images ![alt](path) — MUST be before links
+        def replace_img(m):
+            alt = m.group(1)
+            path = m.group(2)
+            # Strip fig:key| or tbl:key| prefix from caption
+            caption = re.sub(r'^(?:fig|tbl):[a-zA-Z0-9_-]+\|', '', alt)
+            return f"\\begin{{figure}}[H]\n\\centering\n\\includegraphics[width=0.85\\textwidth]{{{path}}}\n\\caption{{{caption}}}\n\\end{{figure}}"
+        text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_img, text)
+        # Links [text](url)
+        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\\href{\2}{\1}", text)
+        # Cross-references
+        text = re.sub(r"\[@eq:([^\]]+)\]", r"\\textsf{公式 \\ref{eq:\1}}", text)
+        text = re.sub(r"\[@fig:([^\]]+)\]", r"\\textsf{图 \\ref{fig:\1}}", text)
+        text = re.sub(r"\[@tbl:([^\]]+)\]", r"\\textsf{表 \\ref{tbl:\1}}", text)
+
+        # Restore math
+        for i, m in enumerate(math_spans):
+            text = text.replace(f"<MATH{i}>", m)
+
+        return text
+
+    @staticmethod
+    def _latex_escape(text: str) -> str:
+        """Escape LaTeX special characters in plain text."""
+        for ch in ["&", "%", "$", "#", "_", "{", "}", "~", "^"]:
+            text = text.replace(ch, "\\" + ch)
+        return text
+
+    def _compile_pdf(self, tex_path: Path, out_dir: Path) -> bool:
+        """Run xelatex twice to compile a PDF. Returns True on success."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        jobname = tex_path.stem
+        pdf_path = out_dir / f"{jobname}.pdf"
+        for run in (1, 2):
+            subprocess.run(
+                [
+                    "xelatex",
+                    "-interaction=nonstopmode",
+                    "-output-directory", str(out_dir),
+                    "-jobname", jobname,
+                    str(tex_path),
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(self.root),   # run from project root for correct relative paths
+                timeout=60,
+            )
+        # Check if PDF was generated (xelatex may return non-zero on warnings)
+        ok = pdf_path.exists() and pdf_path.stat().st_size > 0
+        if not ok:
+            log_path = out_dir / f"{jobname}.log"
+            tail = ""
+            if log_path.exists():
+                lines = log_path.read_text(errors="replace").splitlines()
+                tail = "\n".join(lines[-20:])
+            print(f"\n  [PDF] xelatex failed:\n{tail}")
+        # Clean up aux/log files
+        for ext in (".aux", ".log", ".out", ".toc"):
+            p = out_dir / f"{jobname}{ext}"
+            if p.exists():
+                p.unlink()
+        return ok
+
+    def _copy_pdf_to_output(self, post: dict) -> None:
+        """Copy cached PDF from .tex_build to output directory."""
+        post_id = post["id"]
+        pdf_src = self.root / ".tex_build" / f"{post_id}.pdf"
+        pdf_dst = self.output_dir / post["url"].replace(".html", ".pdf")
+        if pdf_src.exists():
+            pdf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pdf_src, pdf_dst)
+
+    def _build_preamble(self) -> str:
+        """Build LaTeX preamble with config values baked in."""
+        jname = self.config.get("journal", {}).get("name", "Research Blog")
+        subtitle = self.config.get("site_subtitle", "")
+        # Escape LaTeX specials in config strings
+        jname = jname.replace("&", "\\&").replace("%", "\\%").replace("#", "\\#")
+        subtitle = subtitle.replace("&", "\\&").replace("%", "\\%").replace("#", "\\#")
+
+        return f"""\\documentclass[10pt,a4paper]{{ctexart}}
+
+% ---- Fonts ----
+\\usepackage{{libertinus}}
+% ctexart handles CJK fonts automatically on macOS
+
+% ---- Geometry (compact) ----
+\\usepackage[paperwidth=190mm,paperheight=260mm,
+            top=0.55in,bottom=0.55in,
+            left=0.75in,right=0.75in,
+            includehead,includefoot]{{geometry}}
+
+% ---- Spacing (tight) ----
+\\linespread{{1.0}}
+\\setlength{{\\parskip}}{{0.2em plus 0.05em minus 0.05em}}
+\\setlength{{\\parindent}}{{1.2em}}
+\\setlength{{\\abovedisplayskip}}{{3pt plus 1pt minus 2pt}}
+\\setlength{{\\belowdisplayskip}}{{3pt plus 1pt minus 2pt}}
+\\setlength{{\\abovedisplayshortskip}}{{0pt plus 1pt}}
+\\setlength{{\\belowdisplayshortskip}}{{1pt plus 1pt minus 1pt}}
+\\usepackage{{enumitem}}
+\\setlist{{nosep,leftmargin=*}}
+
+% ---- Colors ----
+\\usepackage{{xcolor}}
+\\definecolor{{accent}}{{HTML}}{{8B0000}}
+\\definecolor{{dark}}{{HTML}}{{1A1A1A}}
+\\definecolor{{muted}}{{HTML}}{{555555}}
+
+% ---- Hyperlinks ----
+\\usepackage{{hyperref}}
+\\hypersetup{{colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent}}
+
+% ---- Headers / Footers ----
+\\usepackage{{fancyhdr}}
+\\pagestyle{{fancy}}
+\\fancyhf{{}}
+\\fancyhead[L]{{\\small\\textsf{{\\color{{muted}}{jname}}}}}
+\\fancyhead[R]{{\\small\\textsf{{\\color{{muted}}Vol.\\ I \\ No.\\ 1}}}}
+\\fancyfoot[C]{{\\small\\textsf{{\\color{{muted}}\\thepage}}}}
+\\renewcommand{{\\headrulewidth}}{{0.4pt}}
+\\renewcommand{{\\footrulewidth}}{{0pt}}
+\\setlength{{\\headheight}}{{14pt}}
+
+% ---- Code blocks ----
+\\usepackage{{fancyvrb}}
+\\fvset{{fontsize=\\small,frame=single,framerule=0.4pt,framesep=6pt}}
+\\DefineVerbatimEnvironment{{codeverb}}{{Verbatim}}{{}}
+
+% ---- Graphics ----
+\\usepackage{{graphicx}}
+\\usepackage{{float}}
+\\graphicspath{{ {{content/}} }}
+
+% ---- Math ----
+\\usepackage{{amsmath}}
+
+% ---- Captions ----
+\\usepackage{{caption}}
+\\captionsetup{{font={{small,sf}},labelfont={{bf,color=accent}},labelsep=period,skip=4pt}}
+
+% ---- No titling package needed (manual compact header) ----
+
+% ---- Section headings (compact) ----
+\\usepackage{{titlesec}}
+\\titleformat{{\\section}}{{\\large\\bfseries\\color{{dark}}}}{{\\thesection}}{{0.6em}}{{}}[\\vspace{{-2pt}}\\rule{{\\textwidth}}{{0.5pt}}]
+\\titleformat{{\\subsection}}{{\\normalsize\\bfseries\\color{{dark}}}}{{\\thesubsection}}{{0.6em}}{{}}
+\\titleformat{{\\subsubsection}}{{\\normalsize\\bfseries\\color{{dark}}}}{{\\thesubsubsection}}{{0.6em}}{{}}
+\\titlespacing{{\\section}}{{0pt}}{{10pt plus 2pt}}{{4pt plus 2pt}}
+\\titlespacing{{\\subsection}}{{0pt}}{{8pt plus 2pt}}{{3pt plus 2pt}}
+\\titlespacing{{\\subsubsection}}{{0pt}}{{6pt plus 2pt}}{{2pt plus 2pt}}
+
+% ---- Footnotes ----
+\\renewcommand{{\\footnotesize}}{{\\scriptsize}}"""
+
+    def _build_pdf(self, post: dict) -> None:
+        """Convert post to LaTeX, compile PDF, copy to output."""
+        tex_dir = self.root / ".tex_build"
+        tex_dir.mkdir(exist_ok=True)
+
+        post_id = post["id"]
+        tex_path = tex_dir / f"{post_id}.tex"
+
+        # Prepare template variables
+        authors = post.get("authors", [])
+        affiliations = []
+        for idx, a in enumerate(authors):
+            if a.get("affiliation"):
+                affiliations.append({"num": idx + 1, "text": a["affiliation"]})
+
+        abstract = post.get("abstract", "")
+        keywords = post.get("keywords", [])
+
+        # Get raw markdown content (strip frontmatter), preprocess equations
+        import frontmatter as fm
+        raw = fm.load(str(post["path"]))
+        raw_content, _ = self._preprocess_equations(raw.content)
+        body = self._markdown_to_latex(raw_content)
+
+        # Build LaTeX preamble (static, with config baked in)
+        preamble = self._build_preamble()
+
+        # Render LaTeX template
+        tex_tmpl = self.jinja.get_template("article.tex")
+        tex_content = tex_tmpl.render(
+            preamble=preamble,
+            journal_name=self.config.get("journal", {}).get("name", "Blog"),
+            author_name=self.config.get("author", ""),
+            title=post.get("title", ""),
+            authors=authors,
+            affiliations=affiliations,
+            date=post.get("date").strftime("%Y-%m-%d") if post.get("date") else "",
+            abstract=abstract,
+            keywords=keywords,
+            category=post.get("category", ""),
+            doi=post.get("doi", ""),
+            body=body,
+        )
+
+        tex_path.write_text(tex_content, encoding="utf-8")
+
+        # Compile
+        print(f"  [PDF] Compiling {post['id']} ... ", end="", flush=True)
+        ok = self._compile_pdf(tex_path, tex_dir)
+        if ok:
+            pdf_src = tex_dir / f"{post_id}.pdf"
+            pdf_dst = self.output_dir / post["url"].replace(".html", ".pdf")
+            pdf_dst.parent.mkdir(parents=True, exist_ok=True)
+            if pdf_src.exists():
+                shutil.copy2(pdf_src, pdf_dst)
+                size_kb = pdf_dst.stat().st_size // 1024
+                print(f"✓  ({size_kb} KB)")
+            else:
+                print("✗  (PDF not generated)")
+        else:
+            print("✗")
+
+    # ------------------------------------------------------------------ #
+    # Bibliography
+    # ------------------------------------------------------------------ #
     def _normalize_bibliography(self, bib):
         """Convert bibliography to list of (key, text) tuples.
 
@@ -157,13 +601,75 @@ class BlogBuilder:
         return re.sub(r"\[@([a-zA-Z0-9_\-; @]+)\]", repl, content)
 
     @staticmethod
-    def _process_numbered_refs(body):
-        """Post-process HTML: auto-number figures/tables and resolve [@fig:key] / [@tbl:key] refs.
+    def _preprocess_equations(content):
+        """Pre-process equation blocks before markdown conversion.
+
+        - Wraps \\begin{equation} / \\begin{align} in \\[ ... \\] for arithmatex.
+        - Extracts \\label{eq:key} → builds label-to-number map.
+        - Adds \\tag{N} for KaTeX equation numbering.
+        - Inserts anchor <a id="eq:key"></a> before labeled equations.
+        - Does NOT touch blocks already inside $$ or \\[...\\].
+
+        Returns: (processed_content, eq_labels: dict)
+        """
+        eq_labels = {}   # label → number
+        eq_counter = 0
+
+        def replace_eq(match):
+            nonlocal eq_counter
+            full = match.group(0)
+            env = match.group(1)
+            body = match.group(2)
+
+            # Skip if already inside display-math delimiters
+            before_start = max(0, match.start() - 20)
+            before = content[before_start:match.start()]
+            if '$$' in before:
+                return full
+
+            eq_counter += 1
+
+            # Pull out \label{eq:key}
+            label_m = re.search(r'\\label\{eq:([a-zA-Z0-9_-]+)\}', body)
+            label_key = None
+            if label_m:
+                label_key = label_m.group(1)
+                eq_labels[label_key] = eq_counter
+                body = body[:label_m.start()] + body[label_m.end():]
+
+            # Build anchor for labeled equations (with blank lines for paragraph breaks)
+            anchor = f'\n\n<a id="eq:{label_key}"></a>\n\n' if label_key else '\n\n'
+
+            return (
+                f'{anchor}'
+                f'$$\n'
+                f'\\begin{{{env}}}\\tag{{{eq_counter}}}\n'
+                f'{body.strip()}\n'
+                f'\\end{{{env}}}\n'
+                f'$$'
+            )
+
+        content = re.sub(
+            r'\\begin\{(equation|align)\}(.*?)\\end\{\1\}',
+            replace_eq,
+            content,
+            flags=re.DOTALL,
+        )
+
+        return content, eq_labels
+
+    @staticmethod
+    def _process_numbered_refs(body, eq_labels=None):
+        """Post-process HTML: auto-number figures/tables/equations and resolve refs.
 
         Figure syntax in markdown:  ![fig:alias|Caption text](path/to/img.png)
         Table syntax in markdown:    [@tbl:alias|Caption text]  (line immediately before the table)
-        Reference in text:           [@fig:alias]  or  [@tbl:alias]
+        Equation syntax:            \\begin{equation}\\label{eq:key} ... \\end{equation}
+        Reference in text:          [@fig:alias]  /  [@tbl:alias]  /  [@eq:key]
         """
+        if eq_labels is None:
+            eq_labels = {}
+
         fig_counter = 0
         tbl_counter = 0
         fig_aliases = {}
@@ -214,7 +720,7 @@ class BlogBuilder:
             flags=re.DOTALL,
         )
 
-        # Pass 3: Resolve [@fig:key] and [@tbl:key] to numbered links
+        # Pass 3: Resolve [@fig:key], [@tbl:key], [@eq:key] to numbered links
         def replace_ref(match):
             prefix = match.group(1)
             key = match.group(2)
@@ -222,9 +728,11 @@ class BlogBuilder:
                 return f'<a href="#fig:{key}" class="xref">图 {fig_aliases[key]}</a>'
             if prefix == "tbl" and key in tbl_aliases:
                 return f'<a href="#tbl:{key}" class="xref">表 {tbl_aliases[key]}</a>'
+            if prefix == "eq" and key in eq_labels:
+                return f'<a href="#eq:{key}" class="xref">公式 {eq_labels[key]}</a>'
             return match.group(0)
 
-        body = re.sub(r'\[@(fig|tbl):([a-zA-Z0-9_-]+)\]', replace_ref, body)
+        body = re.sub(r'\[@(fig|tbl|eq):([a-zA-Z0-9_-]+)\]', replace_ref, body)
 
         return body
 
@@ -238,6 +746,9 @@ class BlogBuilder:
         # Preprocess: [@key] → [^N]
         content = self._preprocess_citations(post.content, bib_map)
 
+        # Preprocess: number equations and build label→number map
+        content, eq_labels = self._preprocess_equations(content)
+
         # Inject bibliography as footnote definitions
         if bib_entries:
             content += "\n\n"
@@ -245,7 +756,7 @@ class BlogBuilder:
                 content += f"[^{bib_map[key]}]: {text}\n"
 
         body = self.md.convert(content)
-        body = self._process_numbered_refs(body)
+        body = self._process_numbered_refs(body, eq_labels)
         toc = self.md.toc if hasattr(self.md, "toc") else ""
         self.md.reset()
 
@@ -263,6 +774,7 @@ class BlogBuilder:
             "bibliography": post.metadata.get("bibliography", []),
             "banner": post.metadata.get("banner", ""),
             "draft": post.metadata.get("draft", False),
+            "id": self._article_id(path),
             "slug": post.metadata.get("slug", self._slugify(post.metadata.get("title", "untitled"))),
             "path": path,
             "body": body,
@@ -289,8 +801,13 @@ class BlogBuilder:
             meta = self._parse_markdown(path)
             if meta["draft"]:
                 continue
-            meta["url"] = f"posts/{meta['slug']}.html"
+            meta["url"] = f"posts/{meta['id']}.html"
             self.posts.append(meta)
+            # Build PDF if source changed
+            if self._should_rebuild_pdf(meta):
+                self._build_pdf(meta)
+            # Always copy cached PDF to output (public/ is wiped each build)
+            self._copy_pdf_to_output(meta)
 
         self.posts.sort(key=lambda x: x["date"] or datetime.min, reverse=True)
 
@@ -310,7 +827,7 @@ class BlogBuilder:
 
         for path in sorted(pages_dir.rglob("*.md")):
             meta = self._parse_markdown(path)
-            meta["url"] = f"pages/{meta['slug']}.html"
+            meta["url"] = f"pages/{meta['id']}.html"
             self.pages.append(meta)
 
     # ------------------------------------------------------------------ #
@@ -506,6 +1023,8 @@ class BlogBuilder:
         print("\n[5/5] Rendering RSS feed & search index...")
         self._build_rss()
         self._build_search_index()
+
+        self._save_cache()
 
         print("\n" + "=" * 60)
         print(f" Done! Output in: {self.output_dir.relative_to(self.root)}")

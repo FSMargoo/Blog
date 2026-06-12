@@ -24,10 +24,10 @@
   <link rel="stylesheet" href="{{ site_root }}static/css/style.css">
   <link rel="alternate" type="application/rss+xml" title="{{ config.site_name }}" href="{{ site_root }}feed.xml">
 
-  <!-- Fonts: Playfair Display + Crimson Text + IBM Plex Mono -->
+  <!-- Fonts: Libre Baskerville (body) + Inter (UI) + JetBrains Mono (code/meta) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400;1,600&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,500;0,700;1,500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
   {% block extra_head %}{% endblock %}
 </head>
@@ -46,16 +46,12 @@
     </div>
   </div>
 
-  <!-- Masthead -->
-  <header class="site-masthead">
-    <a href="{{ site_root }}index.html" class="masthead-journal-name">{{ config.journal.name }}</a>
-    <div class="masthead-subtitle">{{ config.site_subtitle }}</div>
-    <div class="masthead-meta">{{ config.journal.volume_prefix }} I {{ config.journal.issue_prefix }} 1 &middot; Established {{ now.year if now else '2024' }}</div>
-  </header>
-
-  <!-- Navigation -->
+  <!-- Top Navigation Bar -->
   <nav class="site-nav">
     <div class="nav-inner">
+      <div class="nav-brand">
+        <a href="{{ site_root }}index.html">{{ config.journal.name }}</a>
+      </div>
       <ul class="nav-links">
         <li><a href="{{ site_root }}index.html">Home</a></li>
         <li><a href="{{ site_root }}archive.html">Papers</a></li>
@@ -88,24 +84,15 @@
           </ul>
         </div>
         <div>
-          <p class="footer-col-title">Resources</p>
-          <ul class="footer-col-links">
-            <li><a href="#">BibTeX Library</a></li>
-            <li><a href="#">Style Guide</a></li>
-            <li><a href="#">Privacy Policy</a></li>
-          </ul>
-        </div>
-        <div>
           <p class="footer-col-title">Connect</p>
           <ul class="footer-col-links">
-            <li><a href="#">GitHub</a></li>
-            <li><a href="#">LinkedIn</a></li>
-            <li><a href="#">Email</a></li>
+            <li><a href="https://github.com/FSMargoo">GitHub</a></li>
+            <li><a href="mailto:qiuzhengyu@siggraph.org">Email</a></li>
           </ul>
         </div>
       </div>
     </div>
-    <p class="footer-bottom">&copy; {{ config.author }} &mdash; {{ config.journal.name }} &middot; All papers are &copy; the author. ISSN {{ config.journal.issn }}.</p>
+    <p class="footer-bottom">&copy; {{ config.author }} &mdash; {{ config.journal.name }}</p>
   </footer>
 
   <script id="search-data" type="application/json">{{ search_json | safe }}</script>
@@ -142,7 +129,6 @@
             return;
           } catch(e) {}
         }
-        // Fallback: try XHR for server-hosted sites
         var xhr = new XMLHttpRequest();
         xhr.open('GET', '{{ site_root }}search.json', true);
         xhr.onreadystatechange = function() {

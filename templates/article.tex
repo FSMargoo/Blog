@@ -1,0 +1,38 @@
+{{ preamble }}
+
+\begin{document}
+
+% ---- Compact left-aligned header (no \maketitle) ----
+{\LARGE\bfseries {{ title }}\par}
+\vspace{2pt}
+{\normalsize {% for author in authors %}{{ author.name }}{% if author.affiliation %}$^{ {{ loop.index }} }${% endif %}{% if not loop.last %}, {% endif %}{% endfor %}\par}
+{% if affiliations %}
+\vspace{1pt}
+{\footnotesize\color{muted}
+{% for affil in affiliations %}$^{ {{ affil.num }} }$ {{ affil.text }}{% if not loop.last %}\quad{% endif %}{% endfor %}\par}
+{% endif %}
+{\footnotesize\color{muted}{% if date %}{{ date }}{% else %}\today{% endif %}{% if category %} · {{ category }}{% endif %}{% if doi %} · DOI: {{ doi }}{% endif %}\par}
+
+{%- if abstract %}
+\vspace{4pt}
+{\small\textbf{Abstract.} {{ abstract }}\par}
+{%- if keywords %}
+\vspace{1pt}
+{\small\textbf{Keywords:} {{ keywords | join(', ') }}\par}
+{%- endif %}
+{%- endif %}
+
+\vspace{4pt}
+\rule{\textwidth}{1pt}
+\vspace{4pt}
+
+{{ body }}
+
+\vspace{6pt}
+\rule{\textwidth}{1pt}
+\vspace{4pt}
+
+{\footnotesize\color{muted}
+\textcopyright\ {{ author_name }}. Published in \textit{{ '{' }}{{ journal_name }}{{ '}' }}. CC BY-NC 4.0.\par}
+
+\end{document}

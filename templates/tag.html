@@ -6,8 +6,12 @@
 {% block content %}
 <div class="page-layout">
   <aside class="sidebar">
+    <div class="sidebar-brand">
+      <h1>{{ config.journal.name }}</h1>
+      <span class="tagline">{{ config.site_subtitle }}</span>
+    </div>
     <div>
-      <p class="sidebar-section-title">Sections</p>
+      <p class="sidebar-section-title">Collections</p>
       <ul class="sidebar-list">
         <li><a href="{{ site_root }}archive.html">All Papers</a><span class="sidebar-count">{{ all_posts | length }}</span></li>
         {% for cat, items in all_categories.items() %}
@@ -23,9 +27,12 @@
         {% endfor %}
       </ul>
     </div>
+    <div class="sidebar-info">
+      <div>&copy; {{ config.author }}</div>
+    </div>
   </aside>
 
-  <main>
+  <main class="main-content">
     <div class="page-heading">
       <h1 class="page-heading-title">Tag: <em>{{ tag }}</em></h1>
       <p class="page-heading-meta">{{ posts | length }} papers</p>

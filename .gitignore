@@ -1,5 +1,7 @@
 # Build output
 public/
+.build_cache.json
+.tex_build/
 
 # GitHub Pages deploy target
 fsmargoo.github.io/

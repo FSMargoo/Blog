@@ -11,7 +11,7 @@
   <article>
 
     <header class="article-header">
-      <div class="article-category">{{ post.category }}</div>
+      <span class="article-category">{{ post.category }}</span>
 
       <h1 class="article-title">{{ post.title }}</h1>
 
@@ -39,14 +39,15 @@
       {% endif %}
 
       <div class="article-meta">
-        {% if post.date %}Received {{ post.date | date_format("%d %B %Y") }}{% endif %}
-        {% if post.updated %} &middot; Revised {{ post.updated | date_format("%d %B %Y") }}{% endif %}
+        {% if post.date %}<span>Received {{ post.date | date_format("%d %B %Y") }}</span>{% endif %}
+        {% if post.updated %}<span>Revised {{ post.updated | date_format("%d %B %Y") }}</span>{% endif %}
+        <span><a href="{{ site_root }}posts/{{ post.id }}.pdf" class="btn btn-sm">📄 PDF</a></span>
       </div>
     </header>
 
     {% if post.abstract %}
     <section class="abstract-block">
-      <div class="abstract-label">Abstract</div>
+      <span class="abstract-label">Abstract</span>
       <p class="abstract-text">{{ post.abstract }}</p>
       {% if post.keywords %}
       <div class="keywords-line">
