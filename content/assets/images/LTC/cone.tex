@@ -1,0 +1,237 @@
+\documentclass[tikz,border=8pt]{standalone}
+
+\usepackage{amsmath}
+\usepackage{bm}
+\usepackage{newtxtext,newtxmath}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{arrows.meta,calc}
+
+\begin{document}
+
+% ------------------------------------------------------------
+% 3D view
+% ------------------------------------------------------------
+\tdplotsetmaincoords{65}{115}
+
+\begin{tikzpicture}[
+    tdplot_main_coords,
+    line cap=round,
+    line join=round,
+    >=Stealth,
+    font=\small
+]
+
+% ------------------------------------------------------------
+% Parameters
+% ------------------------------------------------------------
+\def\R{2.45}
+
+% tangent point on the hemisphere
+\def\thp{43}    % polar angle from +z
+\def\php{322}   % azimuth angle
+
+% size of the small tangent patch
+\def\su{0.38}
+\def\sv{0.30}
+
+% ------------------------------------------------------------
+% Styles
+% ------------------------------------------------------------
+\tikzset{
+    spheregrid/.style={
+        draw=gray!32,
+        line width=.55pt
+    },
+    sphereedge/.style={
+        draw=gray!58,
+        line width=1.05pt
+    },
+    hiddenedge/.style={
+        draw=gray!35,
+        dashed,
+        dash pattern=on 2pt off 2.4pt,
+        line width=.65pt
+    },
+    tangentpatch/.style={
+        draw=black!60,
+        line width=.8pt,
+        fill=black!35,
+        fill opacity=.16
+    },
+    ray/.style={
+        draw=black!55,
+        dashed,
+        dash pattern=on 2.6pt off 2.4pt,
+        line width=.75pt
+    },
+    volumeedge/.style={
+        draw=black!50,
+        line width=.55pt,
+        fill=black!20,
+        fill opacity=.045
+    },
+    point/.style={
+        circle,
+        fill=black!70,
+        inner sep=1.05pt
+    },
+    centerpoint/.style={
+        circle,
+        fill=black!75,
+        inner sep=1.15pt
+    },
+    labelbox/.style={
+        fill=white,
+        fill opacity=.86,
+        text opacity=1,
+        rounded corners=1.7pt,
+        inner xsep=3pt,
+        inner ysep=1.6pt,
+        align=center
+    }
+}
+
+% ------------------------------------------------------------
+% Draw an upper hemisphere z >= 0
+% ------------------------------------------------------------
+\newcommand{\drawhemi}{%
+    % equator: back dashed, front solid
+    \draw[hiddenedge]
+        plot[domain=25:205, samples=90, variable=\t]
+        ({\R*cos(\t)}, {\R*sin(\t)}, 0);
+
+    \draw[sphereedge]
+        plot[domain=205:385, samples=90, variable=\t]
+        ({\R*cos(\t)}, {\R*sin(\t)}, 0);
+
+    % latitude circles
+    \foreach \th in {25,48,70}{
+        \pgfmathsetmacro{\rr}{\R*sin(\th)}
+        \pgfmathsetmacro{\zz}{\R*cos(\th)}
+        \draw[spheregrid]
+            plot[domain=25:385, samples=110, variable=\t]
+            ({\rr*cos(\t)}, {\rr*sin(\t)}, \zz);
+    }
+
+    % meridians
+    \foreach \ph in {25,70,115,160,205,250,295,340}{
+        \draw[spheregrid]
+            plot[domain=0:90, samples=80, variable=\t]
+            ({\R*sin(\t)*cos(\ph)},
+             {\R*sin(\t)*sin(\ph)},
+             {\R*cos(\t)});
+    }
+
+    % two stronger silhouette-like meridians
+    \draw[sphereedge]
+        plot[domain=0:90, samples=90, variable=\t]
+        ({\R*sin(\t)*cos(25)},
+         {\R*sin(\t)*sin(25)},
+         {\R*cos(\t)});
+
+    \draw[sphereedge]
+        plot[domain=0:90, samples=90, variable=\t]
+        ({\R*sin(\t)*cos(205)},
+         {\R*sin(\t)*sin(205)},
+         {\R*cos(\t)});
+}
+
+% ------------------------------------------------------------
+% Main point on the hemisphere
+% ------------------------------------------------------------
+\coordinate (O) at (0,0,0);
+
+\pgfmathsetmacro{\px}{\R*sin(\thp)*cos(\php)}
+\pgfmathsetmacro{\py}{\R*sin(\thp)*sin(\php)}
+\pgfmathsetmacro{\pz}{\R*cos(\thp)}
+
+\coordinate (P) at (\px,\py,\pz);
+
+% ------------------------------------------------------------
+% Local tangent basis at P on the sphere
+%
+% n = P / R
+% u = normalized dX / dphi
+% v = normalized dX / dtheta
+% ------------------------------------------------------------
+\pgfmathsetmacro{\nx}{sin(\thp)*cos(\php)}
+\pgfmathsetmacro{\ny}{sin(\thp)*sin(\php)}
+\pgfmathsetmacro{\nz}{cos(\thp)}
+
+% u direction, tangent along azimuth
+\pgfmathsetmacro{\uxraw}{-sin(\php)}
+\pgfmathsetmacro{\uyraw}{ cos(\php)}
+\pgfmathsetmacro{\uzraw}{0}
+
+% v direction, tangent along polar angle
+\pgfmathsetmacro{\vxraw}{cos(\thp)*cos(\php)}
+\pgfmathsetmacro{\vyraw}{cos(\thp)*sin(\php)}
+\pgfmathsetmacro{\vzraw}{-sin(\thp)}
+
+% these are already unit length for sphere parameterization
+\pgfmathsetmacro{\ux}{\uxraw}
+\pgfmathsetmacro{\uy}{\uyraw}
+\pgfmathsetmacro{\uz}{\uzraw}
+
+\pgfmathsetmacro{\vx}{\vxraw}
+\pgfmathsetmacro{\vy}{\vyraw}
+\pgfmathsetmacro{\vz}{\vzraw}
+
+% ------------------------------------------------------------
+% Four vertices of the small tangent patch
+% ------------------------------------------------------------
+\coordinate (Q1) at ({\px+\su*\ux+\sv*\vx},
+                     {\py+\su*\uy+\sv*\vy},
+                     {\pz+\su*\uz+\sv*\vz});
+
+\coordinate (Q2) at ({\px-\su*\ux+\sv*\vx},
+                     {\py-\su*\uy+\sv*\vy},
+                     {\pz-\su*\uz+\sv*\vz});
+
+\coordinate (Q3) at ({\px-\su*\ux-\sv*\vx},
+                     {\py-\su*\uy-\sv*\vy},
+                     {\pz-\su*\uz-\sv*\vz});
+
+\coordinate (Q4) at ({\px+\su*\ux-\sv*\vx},
+                     {\py+\su*\uy-\sv*\vy},
+                     {\pz+\su*\uz-\sv*\vz});
+
+% ------------------------------------------------------------
+% Draw order
+% ------------------------------------------------------------
+\drawhemi
+
+% subtle volume faces
+\filldraw[volumeedge] (O)--(Q1)--(Q2)--cycle;
+\filldraw[volumeedge] (O)--(Q2)--(Q3)--cycle;
+\filldraw[volumeedge] (O)--(Q3)--(Q4)--cycle;
+\filldraw[volumeedge] (O)--(Q4)--(Q1)--cycle;
+
+% dashed rays from center to the four vertices
+\draw[ray] (O) -- (Q1);
+\draw[ray] (O) -- (Q2);
+\draw[ray] (O) -- (Q3);
+\draw[ray] (O) -- (Q4);
+
+% tangent patch
+\filldraw[tangentpatch] (Q1)--(Q2)--(Q3)--(Q4)--cycle;
+
+% vertices and center
+\node[centerpoint] at (O) {};
+\node[point] at (Q1) {};
+\node[point] at (Q2) {};
+\node[point] at (Q3) {};
+\node[point] at (Q4) {};
+
+% ------------------------------------------------------------
+% dV label inside the cone / pyramid volume
+% ------------------------------------------------------------
+\coordinate (Vlabel) at ({0.42*\px+0.18},
+                         {0.42*\py+0.05},
+                         {0.42*\pz});
+
+\node[labelbox, text=black] at (Vlabel) {$\mathrm{d}V$};
+
+\end{tikzpicture}
+
+\end{document}

@@ -95,7 +95,6 @@
     <p class="footer-bottom">&copy; {{ config.author }} &mdash; {{ config.journal.name }}</p>
   </footer>
 
-  <script id="search-data" type="application/json">{{ search_json | safe }}</script>
   <script>
     (function() {
       var overlay = document.getElementById('searchOverlay');
@@ -121,14 +120,6 @@
 
       function loadIndex() {
         if (indexData) return;
-        var el = document.getElementById('search-data');
-        if (el && el.textContent) {
-          try {
-            indexData = JSON.parse(el.textContent);
-            status.textContent = indexData.length + ' papers indexed';
-            return;
-          } catch(e) {}
-        }
         var xhr = new XMLHttpRequest();
         xhr.open('GET', '{{ site_root }}search.json', true);
         xhr.onreadystatechange = function() {

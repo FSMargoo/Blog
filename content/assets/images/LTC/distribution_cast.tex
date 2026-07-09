@@ -1,0 +1,165 @@
+\documentclass[tikz,border=8pt]{standalone}
+
+\usepackage{amsmath}
+\usepackage{bm}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{arrows.meta,calc}
+
+\begin{document}
+
+\tdplotsetmaincoords{66}{118}
+
+\begin{tikzpicture}[
+    tdplot_main_coords,
+    line cap=round,
+    line join=round,
+    >=Stealth,
+    font=\small
+]
+
+% ------------------------------------------------------------
+% Parameters
+% ------------------------------------------------------------
+\def\Rbase{2.15}      % numerical value of OM
+\def\zheight{1.75}    % numerical value of r
+\def\phiM{315}        % angular position of M on the base circle
+
+% ------------------------------------------------------------
+% Stylesblack
+% ------------------------------------------------------------
+\tikzset{
+    basefront/.style={
+        draw=black!65,
+        line width=1.05pt
+    },
+    baseback/.style={
+        draw=black!50,
+        dashed,
+        dash pattern=on 2.3pt off 2.3pt,
+        line width=0.75pt
+    },
+    topplane/.style={
+        draw=black!55,
+        fill=black!35,
+        fill opacity=0.12,
+        line width=0.85pt
+    },
+    mainseg/.style={
+        draw=black!72,
+        line width=0.95pt
+    },
+    dashedseg/.style={
+        draw=black,
+        dashed,
+        dash pattern=on 2.6pt off 2.5pt,
+        line width=0.85pt
+    },
+    guide/.style={
+        draw=black!45,
+        line width=0.55pt
+    },
+    point/.style={
+        circle,
+        fill=black!78,
+        inner sep=1.15pt
+    },
+    labelbox/.style={
+        fill=white,
+        fill opacity=0.88,
+        text opacity=1,
+        rounded corners=1.5pt,
+        inner xsep=3pt,
+        inner ysep=1.5pt,
+        align=center
+    }
+}
+
+% ------------------------------------------------------------
+% Coordinates
+% ------------------------------------------------------------
+\coordinate (O) at (0,0,0);
+
+\pgfmathsetmacro{\mx}{\Rbase*cos(\phiM)}
+\pgfmathsetmacro{\my}{\Rbase*sin(\phiM)}
+
+\coordinate (M) at (\mx,\my,0);
+\coordinate (X) at (\mx,\my,\zheight);
+
+% top plane z = r
+\coordinate (P1) at (-2.70,-2.45,\zheight);
+\coordinate (P2) at ( 2.75,-2.45,\zheight);
+\coordinate (P3) at ( 2.35, 2.45,\zheight);
+\coordinate (P4) at (-3.10, 2.45,\zheight);
+
+% ------------------------------------------------------------
+% Top plane
+% ------------------------------------------------------------
+\filldraw[topplane] (P1)--(P2)--(P3)--(P4)--cycle;
+
+\node[labelbox] at ($(P2)!0.50!(P3)+(0.25,0.00,0.06)$) {$z=r$};
+
+% ------------------------------------------------------------
+% Base circle in z = 0 plane
+% projected as an ellipse
+% ------------------------------------------------------------
+\draw[baseback]
+    plot[domain=20:200, samples=120, variable=\t]
+    ({\Rbase*cos(\t)}, {\Rbase*sin(\t)}, 0);
+
+\draw[basefront]
+    plot[domain=200:380, samples=120, variable=\t]
+    ({\Rbase*cos(\t)}, {\Rbase*sin(\t)}, 0);
+
+% ------------------------------------------------------------
+% Main construction
+% ------------------------------------------------------------
+\draw[mainseg]   (O) -- (M);
+\draw[mainseg]   (M) -- (X);
+\draw[dashedseg] (O) -- (X);
+
+% ------------------------------------------------------------
+% Right-angle marker at M
+% ------------------------------------------------------------
+\pgfmathsetmacro{\ux}{-cos(\phiM)}
+\pgfmathsetmacro{\uy}{-sin(\phiM)}
+\def\e{0.18}
+
+\coordinate (A) at ({\mx+\e*\ux},{\my+\e*\uy},0);
+\coordinate (B) at ({\mx+\e*\ux},{\my+\e*\uy},\e);
+\coordinate (C) at ({\mx},{\my},\e);
+
+\draw[black!55, line width=0.7pt] (A)--(B)--(C);
+
+% ------------------------------------------------------------
+% Points
+% ------------------------------------------------------------
+\node[point] at (O) {};
+\node[point] at (M) {};
+\node[point] at (X) {};
+
+% ------------------------------------------------------------
+% Point labels
+% ------------------------------------------------------------
+\node[labelbox, anchor=north east] at ($(O)+(-0.05,-0.04,0)$) {$O$};
+\node[labelbox, anchor=north]      at ($(M)+(0,-0.05,0)$) {$M$};
+\node[labelbox, anchor=west]       at ($(X)+(0.08,0.02,0)$) {$X(x,y,r)$};
+
+% ------------------------------------------------------------
+% Length labels
+% ------------------------------------------------------------
+\node[labelbox] at ($(O)!0.55!(M)+(-0.05,-0.30,0)$)
+    {$\rho$};
+
+\coordinate (OXlabel) at ($(O)!0.45!(X)+(-1.05,0.28,0)$);
+\node[labelbox] at (OXlabel)
+    {$\sqrt{\rho^2+r^2}$};
+
+\coordinate (OXtouch) at ($(O)!0.48!(X)$);
+\draw[guide] (OXlabel) -- (OXtouch);
+
+\node[labelbox, anchor=west] at ($(M)!0.52!(X)+(0.18,0.00,0)$)
+    {$r$};
+
+\end{tikzpicture}
+
+\end{document}

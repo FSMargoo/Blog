@@ -41,7 +41,9 @@
       <div class="article-meta">
         {% if post.date %}<span>Received {{ post.date | date_format("%d %B %Y") }}</span>{% endif %}
         {% if post.updated %}<span>Revised {{ post.updated | date_format("%d %B %Y") }}</span>{% endif %}
+        {% if post.pdf_available %}
         <span><a href="{{ site_root }}posts/{{ post.id }}.pdf" class="btn btn-sm">📄 PDF</a></span>
+        {% endif %}
       </div>
     </header>
 

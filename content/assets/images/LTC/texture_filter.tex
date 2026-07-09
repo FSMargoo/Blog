@@ -1,0 +1,77 @@
+\documentclass[tikz,border=6pt]{standalone}
+
+\usepackage{graphicx}
+\usetikzlibrary{calc}
+
+\begin{document}
+
+\begin{tikzpicture}
+
+% ------------------------------------------------------------
+% Parameters
+% ------------------------------------------------------------
+\def\imgW{7}      % width of each image (cm)
+\def\imgH{6}      % height of each image (cm)
+\def\gap{0.6}     % horizontal gap between images (cm)
+
+% ------------------------------------------------------------
+% White dashed circle style
+% ------------------------------------------------------------
+\tikzset{
+    mark circle/.style={
+        draw=white,
+        line width=0.9pt,
+        dashed,
+        dash pattern=on 3.5pt off 2.5pt
+    },
+    caption style/.style={
+        font=\small,
+        text=black
+    }
+}
+
+% ------------------------------------------------------------
+% Helper macro:
+% Draw one image and overlay the same set of circles
+% #1 = x-shift
+% #2 = image filename
+% #3 = caption
+% ------------------------------------------------------------
+\newcommand{\DrawTexturePanel}[3]{%
+    \begin{scope}[shift={(#1,0)}]
+
+        % image
+        \node[anchor=south west, inner sep=0] at (0,0)
+        {\includegraphics[width=\imgW cm,height=\imgH cm]{#2}};
+
+        % same dashed circles on every image
+        \draw[mark circle] (1.05,4.95) circle[radius=0.38];
+        \draw[mark circle] (2.05,4.10) circle[radius=0.62];
+        \draw[mark circle] (3.30,5.05) circle[radius=0.45];
+        \draw[mark circle] (4.20,3.55) circle[radius=0.80];
+        \draw[mark circle] (5.65,4.45) circle[radius=0.55];
+        \draw[mark circle] (1.55,2.15) circle[radius=0.50];
+        \draw[mark circle] (3.05,1.55) circle[radius=0.72];
+        \draw[mark circle] (5.40,1.85) circle[radius=0.95];
+        \draw[mark circle] (6.35,0.95) circle[radius=0.34];
+
+        % caption
+        \node[caption style] at ({0.5*\imgW},-0.45) {#3};
+
+    \end{scope}
+}
+
+% ------------------------------------------------------------
+% Four panels in one row
+% ------------------------------------------------------------
+\DrawTexturePanel{0}{texture.png}{origin}
+
+\DrawTexturePanel{\imgW+\gap}{texture_blur_sigma_1.png}{LOD=1}
+
+\DrawTexturePanel{2*\imgW+2*\gap}{texture_blur_sigma_5.png}{LOD=2}
+
+\DrawTexturePanel{3*\imgW+3*\gap}{texture_blur_sigma_10.png}{LOD=3}
+
+\end{tikzpicture}
+
+\end{document}

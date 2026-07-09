@@ -1,0 +1,199 @@
+\documentclass[tikz,border=8pt]{standalone}
+
+\usepackage{amsmath}
+\usepackage{bm}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{arrows.meta,calc}
+
+\begin{document}
+
+\tdplotsetmaincoords{65}{115}
+
+\begin{tikzpicture}[
+    line cap=round,
+    line join=round,
+    >=Stealth,
+    font=\small
+]
+
+\def\R{2.35}
+
+\tikzset{
+    spheregrid/.style={
+        draw=gray!28,
+        line width=.55pt
+    },
+    sphereedge/.style={
+        draw=gray!58,
+        line width=1.0pt
+    },
+    hiddenedge/.style={
+        draw=gray!32,
+        dashed,
+        dash pattern=on 2pt off 2.3pt,
+        line width=.65pt
+    },
+    ray/.style={
+        -{Stealth[length=6pt,width=6pt]},
+        draw=black!70,
+        line width=.9pt
+    },
+    tangent/.style={
+        -{Stealth[length=5pt,width=5pt]},
+        draw=gray!58,
+        line width=.75pt
+    },
+    patch/.style={
+        draw=black!62,
+        line width=.75pt,
+        fill=black!45,
+        fill opacity=.18
+    },
+    surfpoint/.style={
+        circle,
+        fill=black!70,
+        inner sep=1.05pt
+    },
+    centerpoint/.style={
+        circle,
+        fill=black!65,
+        inner sep=.85pt
+    },
+    labelbox/.style={
+        fill=white,
+        fill opacity=.82,
+        text opacity=1,
+        rounded corners=1.6pt,
+        inner xsep=2.6pt,
+        inner ysep=1.4pt,
+        align=center
+    }
+}
+
+% =========================================================
+% Draw an upper hemisphere z >= 0 using true 3D parametric curves
+% =========================================================
+\newcommand{\drawhemi}{%
+    % equator: back half dashed, front half solid
+    \draw[hiddenedge]
+        plot[domain=25:205, samples=80, variable=\t]
+        ({\R*cos(\t)}, {\R*sin(\t)}, 0);
+
+    \draw[sphereedge]
+        plot[domain=205:385, samples=80, variable=\t]
+        ({\R*cos(\t)}, {\R*sin(\t)}, 0);
+
+    % latitude circles
+    \foreach \th in {24,46,68}{
+        \pgfmathsetmacro{\rr}{\R*sin(\th)}
+        \pgfmathsetmacro{\zz}{\R*cos(\th)}
+        \draw[spheregrid]
+            plot[domain=25:385, samples=100, variable=\t]
+            ({\rr*cos(\t)}, {\rr*sin(\t)}, \zz);
+    }
+
+    % meridians
+    \foreach \ph in {25,70,115,160,205,250,295,340}{
+        \draw[spheregrid]
+            plot[domain=0:90, samples=70, variable=\t]
+            ({\R*sin(\t)*cos(\ph)},
+             {\R*sin(\t)*sin(\ph)},
+             {\R*cos(\t)});
+    }
+
+    % two stronger silhouette-like meridians
+    \draw[sphereedge]
+        plot[domain=0:90, samples=70, variable=\t]
+        ({\R*sin(\t)*cos(25)},
+         {\R*sin(\t)*sin(25)},
+         {\R*cos(\t)});
+
+    \draw[sphereedge]
+        plot[domain=0:90, samples=70, variable=\t]
+        ({\R*sin(\t)*cos(205)},
+         {\R*sin(\t)*sin(205)},
+         {\R*cos(\t)});
+}
+
+\begin{scope}[tdplot_main_coords]
+    \coordinate (O) at (0,0,0);
+
+    % Hemisphere: no gradient, no ball shading.
+    \drawhemi
+
+    % ---------------------------------------------------------
+    % Local surface point and local solid-angle element
+    % The patch lies on x^2 + y^2 + z^2 = R^2, z >= 0.
+    % ---------------------------------------------------------
+    \pgfmathsetmacro{\px}{-0.50}
+    \pgfmathsetmacro{\py}{0.80}
+    \pgfmathsetmacro{\hx}{0.20}
+    \pgfmathsetmacro{\hy}{0.16}
+
+    \pgfmathsetmacro{\xA}{\px-\hx}
+    \pgfmathsetmacro{\xB}{\px+\hx}
+    \pgfmathsetmacro{\yA}{\py-\hy}
+    \pgfmathsetmacro{\yB}{\py+\hy}
+
+    \pgfmathsetmacro{\pz}{sqrt(\R*\R-\px*\px-\py*\py)}
+    \coordinate (P) at (\px,\py,\pz);
+
+    % Curved local patch on the hemisphere.
+    \path[patch]
+        plot[domain=\xA:\xB, samples=14, variable=\t]
+            ({\t},{\yA},{sqrt(\R*\R-\t*\t-\yA*\yA)})
+        -- plot[domain=\yA:\yB, samples=14, variable=\t]
+            ({\xB},{\t},{sqrt(\R*\R-\xB*\xB-\t*\t)})
+        -- plot[domain=\xB:\xA, samples=14, variable=\t]
+            ({\t},{\yB},{sqrt(\R*\R-\t*\t-\yB*\yB)})
+        -- plot[domain=\yB:\yA, samples=14, variable=\t]
+            ({\xA},{\t},{sqrt(\R*\R-\xA*\xA-\t*\t)})
+        -- cycle;
+
+    % Direction vector omega_o.
+    \draw[ray] (O) -- (P);
+
+    % Tangent directions at P:
+    % z = sqrt(R^2 - x^2 - y^2)
+    % tangent basis:
+    % e_x = (1,0,-x/z), e_y = (0,1,-y/z)
+    \pgfmathsetmacro{\sone}{0.48}
+    \pgfmathsetmacro{\stwo}{0.46}
+
+    \coordinate (Tone) at
+        ({\px+\sone},
+         {\py},
+         {\pz-\sone*\px/\pz});
+
+    \coordinate (Ttwo) at
+        ({\px},
+         {\py+\stwo},
+         {\pz-\stwo*\py/\pz});
+
+    \draw[tangent] (P) -- (Tone);
+    \draw[tangent] (P) -- (Ttwo);
+
+    \node[centerpoint] at (O) {};
+    \node[surfpoint] at (P) {};
+\end{scope}
+
+% ------------------------------------------------------------
+% Labels: all black, with translucent white background.
+% ------------------------------------------------------------
+\node[labelbox, text=black] at ($(O)!0.55!(P)+(0.10,-0.02)$)
+    {$\boldsymbol{\omega}_o$};
+
+\node[labelbox, text=black, anchor=east] at ($(Tone)+(-0.08,0.09)$)
+    {$\boldsymbol{\omega}_1$};
+
+\node[labelbox, text=black, anchor=west] at ($(Ttwo)+(0.18,0.03)$)
+    {$\boldsymbol{\omega}_2$};
+
+\node[labelbox, text=black, anchor=west] at ($(P)+(0.50,0.22)$)
+    {$\mathrm{d}\boldsymbol{\omega}_o$};
+
+\node[text=black!75] at (0,-1.02) {$S^2$};
+
+\end{tikzpicture}
+
+\end{document}

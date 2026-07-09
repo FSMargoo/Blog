@@ -31,3 +31,6 @@ katex:
   css: "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
   js: "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"
   auto_render: "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+
+# 自定义数学宏，会在构建阶段展开；也可以在单篇文章 frontmatter 中定义。
+latex_macros: {}

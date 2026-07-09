@@ -19,6 +19,7 @@
 - **代码高亮**：Pygments 语法高亮
 - **参考文献**：frontmatter 定义 bibliography，自动渲染编号列表
 - **响应式布局**：完美适配桌面与手机
+- **自定义 LaTeX 数学宏**：支持构建阶段展开的 `latex_macros`，HTML / PDF / 知乎导出保持一致
 
 ---
 
@@ -29,6 +30,8 @@
 ```bash
 pip install -r requirements.txt
 ```
+
+如需生成文章 PDF，请另外安装包含 `xelatex` 的 TeX Live / MacTeX。
 
 ### 2. 写文章
 
@@ -69,6 +72,22 @@ def hello():
 
 > **关于 banner**：推荐尺寸 **1200×400 px**（文章页横幅）或 **1200×675 px**（16:9 卡片图）。图片放在 `content/assets/images/`，frontmatter 中路径写 `assets/images/xxx.png`（无需加 `content/` 前缀）。
 
+### 自定义 LaTeX 数学宏
+
+可在 `config.yaml` 中定义全局宏，或在单篇文章 frontmatter 中定义局部宏：
+
+```yaml
+latex_macros:
+  esm:
+    args: 1
+    body: '\left\langle #1\right\rangle'
+  R:
+    args: 0
+    body: '\mathbb{R}'
+```
+
+正文中只在数学区域展开，例如 `$\esm{x}\in\R$` 会在构建时变成标准 LaTeX。代码块、行内代码和普通正文中的 `\esm{x}` 不会被替换。
+
 ### 3. 编译
 
 ```bash
@@ -80,11 +99,16 @@ python build.py
 ### 4. 预览
 
 ```bash
-cd public
-python -m http.server 8080
+python serve.py --watch
 ```
 
-浏览器打开 http://localhost:8080 即可看到 Nature 风格的首页。
+浏览器打开 http://localhost:8000。`--watch` 会在内容、模板或静态资源变化后自动重新构建。
+
+### 5. 测试
+
+```bash
+python -m unittest discover -v
+```
 
 ---
 
@@ -138,6 +162,7 @@ python -m http.server 8080
 | `tags` | ❌ | 标签列表 |
 | `doi` | ❌ | DOI 号 |
 | `bibliography` | ❌ | 参考文献字符串列表 |
+| `latex_macros` | ❌ | 单篇文章的自定义数学宏 |
 | `draft` | ❌ | `true` 则不生成 |
 | `slug` | ❌ | 自定义 URL 别名 |
 

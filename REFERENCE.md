@@ -69,6 +69,7 @@ so you can preview the full site at `http://localhost:8000`.
 | `katex.css` | KaTeX CSS CDN URL |
 | `katex.js` | KaTeX JS CDN URL |
 | `katex.auto_render` | KaTeX auto-render CDN URL |
+| `latex_macros` | Build-time custom math macro definitions |
 
 ## Frontmatter Reference
 
@@ -96,6 +97,10 @@ slug: "custom-url-slug"
 bibliography:
   key1: "Reference text."
   key2: "Reference text."
+latex_macros:
+  esm:
+    args: 1
+    body: '\left\langle #1\right\rangle'
 ---
 ```
 
@@ -145,6 +150,10 @@ bibliography:
 
 **bibliography**
 : Reference list. Supports two formats (see Citations below).
+
+**latex_macros**
+: Per-post custom math macro definitions. These are expanded at build time and
+  must not duplicate a macro already defined in `config.yaml`.
 
 ## Citations
 
@@ -209,6 +218,18 @@ Figure 1: System architecture overview
 
 The alias `arch` creates an anchor `#fig:arch` that can be referenced.
 
+You can optionally add a width directive at the end of the alt text:
+
+```markdown
+![fig:arch|System architecture overview|width=60%](assets/images/arch.png)
+![fig:arch|System architecture overview|width=9cm](assets/images/arch.png)
+```
+
+Supported width values are percentages and standard LaTeX length units such as
+`pt`, `mm`, `cm`, `in`, `em`, and `ex`. HTML uses the requested width directly;
+PDF output caps image width at the text column width so large images do not
+overflow the page.
+
 ### Numbered Tables
 
 Place a marker on the line immediately before a markdown table:
@@ -230,17 +251,6 @@ Table 1: Throughput comparison across failure models (ops/s)
 ```
 
 The alias `throughput` creates an anchor `#tbl:throughput`.
-
-### Cross-References
-
-Reference figures and tables in the text:
-
-```markdown
-The system architecture is shown in [@fig:arch].
-Throughput results are summarized in [@tbl:throughput].
-```
-
-Renders as clickable links: "Figure 1" and "Table 1".
 
 ### Regular Images
 
@@ -265,6 +275,191 @@ $$
 ```
 
 Delimiters `\(...\)` and `\[...\]` are also supported.
+
+### Custom LaTeX Math Macros
+
+Custom math macros are expanded at build time before HTML, PDF, search index,
+RSS, and Zhihu Markdown are generated. This is a source-level expansion system,
+not runtime KaTeX `macros`, so every output format sees the same final LaTeX.
+
+Define global macros in `config.yaml`:
+
+```yaml
+latex_macros:
+  esm:
+    args: 1
+    body: '\left\langle #1\right\rangle'
+  R:
+    args: 0
+    body: '\mathbb{R}'
+```
+
+Or define post-local macros in a post's frontmatter:
+
+```yaml
+---
+title: "Example"
+latex_macros:
+  esm:
+    args: 1
+    body: '\left\langle #1\right\rangle'
+  norm:
+    args: 1
+    body: '\left\lVert #1\right\rVert'
+  R:
+    args: 0
+    body: '\mathbb{R}'
+---
+```
+
+Zero-argument macros may also use the short form:
+
+```yaml
+latex_macros:
+  R: '\mathbb{R}'
+```
+
+Call macros with normal LaTeX command syntax inside math:
+
+```markdown
+Inline: $\esm{x}\in\R$
+Nested: $\norm{\esm{\frac{a}{b}}}$
+Display:
+$$
+\esm{\frac{a}{b}} = \left\langle \frac{a}{b}\right\rangle
+$$
+```
+
+After expansion, the examples above become ordinary LaTeX such as
+`\left\langle x\right\rangle` and `\mathbb{R}`.
+
+#### Macro Definition Syntax
+
+Each full-form macro definition has these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `args` | Yes | Number of braced arguments, from `0` to `9` |
+| `body` | Yes | Replacement LaTeX body, using `#1`, `#2`, ... for arguments |
+
+Example with two arguments:
+
+```yaml
+latex_macros:
+  pair:
+    args: 2
+    body: '\left(#1,#2\right)'
+```
+
+Usage:
+
+```markdown
+$\pair{x}{\frac{a}{b}}$
+```
+
+Expansion:
+
+```latex
+$\left(x,\frac{a}{b}\right)$
+```
+
+#### Expansion Scope
+
+Expansion only runs inside math regions:
+
+- Inline math: `$...$` and `\(...\)`
+- Display math: `$$...$$` and `\[...\]`
+- Supported LaTeX math environments, including `equation`, `align`,
+  `aligned`, `gather`, `multline`, `split`, `cases`, and matrix environments
+
+Fenced code blocks, inline code spans, links, image paths, and ordinary prose
+are left unchanged. For example:
+
+```markdown
+Prose \esm{x} stays literal.
+Code `$\esm{x}$` stays literal.
+Math $\esm{x}$ expands.
+```
+
+#### Validation Rules
+
+- Macro names must contain letters only, without the leading backslash in the
+  YAML key.
+- Arguments are written as `#1`, `#2`, ... in the macro body and must be
+  passed with braces: `\esm{x}`.
+- Expansion is brace-aware, so `\esm{\frac{a}{b}}` is parsed as one argument.
+- Post-local macros may not redefine a global macro from `config.yaml`.
+- Built-in or reserved LaTeX commands such as `\frac`, `\sqrt`, `\left`,
+  `\right`, `\mathbb`, `\begin`, and `\end` cannot be redefined.
+- Missing arguments, unbalanced braces, invalid parameter markers such as `#0`
+  or `#3` in a one-argument macro, and recursive macro definitions stop the
+  build with a `LatexMacroError`.
+
+#### Failure Example
+
+This definition fails because `body` references `#2`, but `args` is `1`:
+
+```yaml
+latex_macros:
+  bad:
+    args: 1
+    body: '#2'
+```
+
+This pair also fails because the definitions are recursive:
+
+```yaml
+latex_macros:
+  a:
+    args: 0
+    body: '\b'
+  b:
+    args: 0
+    body: '\a'
+```
+
+### Numbered Equations
+
+Use `\begin{equation}` and add an optional `\label{eq:alias}` for
+cross-referencing:
+
+```markdown
+\begin{equation}
+\label{eq:rendering}
+L_o(\mathbf{x}, \boldsymbol{\omega}_o) = \int_{\Omega}
+f_r(\mathbf{x}, \boldsymbol{\omega_i}, \boldsymbol{\omega_o})
+L_i(\mathbf{x}, \boldsymbol{\omega_i})
+(\boldsymbol{\omega_i} \cdot \mathbf{n}) \, d\boldsymbol{\omega_i}
+\end{equation}
+```
+
+Renders as a numbered display equation:
+
+```
+                  L_o(x, ω_o) = ∫_Ω f_r(x, ω_i, ω_o) L_i(x, ω_i) (ω_i · n) dω_i   (1)
+```
+
+The alias `rendering` creates an anchor `#eq:rendering` that can be
+referenced (see Cross-References below).  Equations without `\label` are
+still auto-numbered sequentially.
+
+The `\begin{align}` environment is also supported for multi-line numbered
+equations.
+
+### Cross-References
+
+Reference figures, tables, and equations in the text:
+
+```markdown
+The system architecture is shown in [@fig:arch].
+Throughput results are summarized in [@tbl:throughput].
+As derived from the rendering equation [@eq:rendering], ...
+```
+
+Renders as clickable links: "图 1", "表 1", and "公式 1".  The prefixes
+`fig:`, `tbl:`, and `eq:` determine the link target; the alias after the
+colon must match a `\label` (for equations) or the alt-text key (for
+figures and tables).
 
 ## Code Blocks
 

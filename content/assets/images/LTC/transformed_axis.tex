@@ -1,0 +1,391 @@
+\documentclass[tikz,border=8pt]{standalone}
+
+\usepackage{amsmath}
+\usepackage{bm}
+\usepackage{newtxtext,newtxmath}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{arrows.meta,calc}
+
+\begin{document}
+
+\tdplotsetmaincoords{65}{115}
+
+\begin{tikzpicture}[
+    tdplot_main_coords,
+    line cap=round,
+    line join=round,
+    >=Stealth,
+    font=\small
+]
+
+% ------------------------------------------------------------
+% Parameters
+% ------------------------------------------------------------
+\def\a{2.55}
+\def\b{1.95}
+\def\c{2.20}
+
+\def\thp{43}
+\def\php{322}
+
+\def\dth{5.5}
+\def\dph{7.0}
+
+% ------------------------------------------------------------
+% Styles
+% ------------------------------------------------------------
+\tikzset{
+    ellgrid/.style={
+        draw=gray!28,
+        line width=.55pt
+    },
+    elledge/.style={
+        draw=gray!58,
+        line width=1.0pt
+    },
+    hiddenedge/.style={
+        draw=gray!35,
+        dashed,
+        dash pattern=on 2pt off 2.2pt,
+        line width=.65pt
+    },
+    surfcell/.style={
+        draw=black!60,
+        line width=.75pt,
+        fill=black!45,
+        fill opacity=.18
+    },
+    tangentplane/.style={
+        draw=black!55,
+        line width=.7pt,
+        fill=gray!35,
+        fill opacity=.12
+    },
+    upperplane/.style={
+        draw=black!60,
+        line width=.78pt,
+        fill=gray!45,
+        fill opacity=.10
+    },
+    omegaarrow/.style={
+        -{Stealth[length=6pt,width=6pt]},
+        draw=black!75,
+        line width=.95pt
+    },
+    normalarrow/.style={
+        -{Stealth[length=6pt,width=6pt]},
+        draw=black!75,
+        line width=.9pt
+    },
+    localarrow/.style={
+        -{Stealth[length=5pt,width=5pt]},
+        draw=black!65,
+        line width=.8pt
+    },
+    liftarrow/.style={
+        -{Stealth[length=4.5pt,width=4.5pt]},
+        draw=gray!60,
+        dashed,
+        line width=.7pt
+    },
+    anglearc/.style={
+        draw=black!65,
+        line width=.75pt
+    },
+    surfpoint/.style={
+        circle,
+        fill=black!70,
+        inner sep=1.0pt
+    },
+    centerpoint/.style={
+        circle,
+        fill=black!60,
+        inner sep=.85pt
+    },
+    labelbox/.style={
+        fill=white,
+        fill opacity=.84,
+        text opacity=1,
+        rounded corners=1.6pt,
+        inner xsep=2.6pt,
+        inner ysep=1.4pt,
+        align=center
+    }
+}
+
+% ------------------------------------------------------------
+% Point on ellipsoid
+% ------------------------------------------------------------
+\newcommand{\EllPoint}[3]{%
+    \coordinate (#1) at
+    ({\a*sin(#2)*cos(#3)},
+     {\b*sin(#2)*sin(#3)},
+     {\c*cos(#2)});
+}
+
+% ------------------------------------------------------------
+% Upper half ellipsoid
+% ------------------------------------------------------------
+\newcommand{\drawellipsoid}{%
+    \draw[hiddenedge]
+        plot[domain=25:205, samples=90, variable=\t]
+        ({\a*cos(\t)}, {\b*sin(\t)}, 0);
+
+    \draw[elledge]
+        plot[domain=205:385, samples=90, variable=\t]
+        ({\a*cos(\t)}, {\b*sin(\t)}, 0);
+
+    \foreach \th in {22,44,66}{
+        \pgfmathsetmacro{\rx}{\a*sin(\th)}
+        \pgfmathsetmacro{\ry}{\b*sin(\th)}
+        \pgfmathsetmacro{\zz}{\c*cos(\th)}
+        \draw[ellgrid]
+            plot[domain=25:385, samples=110, variable=\t]
+            ({\rx*cos(\t)}, {\ry*sin(\t)}, \zz);
+    }
+
+    \foreach \ph in {25,70,115,160,205,250,295,340}{
+        \draw[ellgrid]
+            plot[domain=0:90, samples=80, variable=\t]
+            ({\a*sin(\t)*cos(\ph)},
+             {\b*sin(\t)*sin(\ph)},
+             {\c*cos(\t)});
+    }
+
+    \draw[elledge]
+        plot[domain=0:90, samples=80, variable=\t]
+        ({\a*sin(\t)*cos(25)},
+         {\b*sin(\t)*sin(25)},
+         {\c*cos(\t)});
+
+    \draw[elledge]
+        plot[domain=0:90, samples=80, variable=\t]
+        ({\a*sin(\t)*cos(205)},
+         {\b*sin(\t)*sin(205)},
+         {\c*cos(\t)});
+}
+
+% ------------------------------------------------------------
+% Main geometry
+% ------------------------------------------------------------
+\coordinate (O) at (0,0,0);
+\drawellipsoid
+
+\EllPoint{P}{\thp}{\php}
+
+\EllPoint{A}{\thp-\dth}{\php-\dph}
+\EllPoint{B}{\thp-\dth}{\php+\dph}
+\EllPoint{C}{\thp+\dth}{\php+\dph}
+\EllPoint{D}{\thp+\dth}{\php-\dph}
+
+\filldraw[surfcell] (A)--(B)--(C)--(D)--cycle;
+
+% ------------------------------------------------------------
+% Surface point coordinates
+% ------------------------------------------------------------
+\pgfmathsetmacro{\xp}{\a*sin(\thp)*cos(\php)}
+\pgfmathsetmacro{\yp}{\b*sin(\thp)*sin(\php)}
+\pgfmathsetmacro{\zp}{\c*cos(\thp)}
+
+% ------------------------------------------------------------
+% Original ellipsoid normal, only used to place the lifted patch
+% ------------------------------------------------------------
+\pgfmathsetmacro{\nxraw}{\xp/(\a*\a)}
+\pgfmathsetmacro{\nyraw}{\yp/(\b*\b)}
+\pgfmathsetmacro{\nzraw}{\zp/(\c*\c)}
+\pgfmathsetmacro{\nlen}{sqrt(\nxraw*\nxraw+\nyraw*\nyraw+\nzraw*\nzraw)}
+
+\pgfmathsetmacro{\nx}{\nxraw/\nlen}
+\pgfmathsetmacro{\ny}{\nyraw/\nlen}
+\pgfmathsetmacro{\nz}{\nzraw/\nlen}
+
+% ------------------------------------------------------------
+% Tangent basis of original patch
+% ------------------------------------------------------------
+\pgfmathsetmacro{\uxraw}{-\a*sin(\thp)*sin(\php)}
+\pgfmathsetmacro{\uyraw}{ \b*sin(\thp)*cos(\php)}
+\pgfmathsetmacro{\uzraw}{0}
+\pgfmathsetmacro{\ulen}{sqrt(\uxraw*\uxraw+\uyraw*\uyraw+\uzraw*\uzraw)}
+\pgfmathsetmacro{\ux}{\uxraw/\ulen}
+\pgfmathsetmacro{\uy}{\uyraw/\ulen}
+\pgfmathsetmacro{\uz}{0}
+
+\pgfmathsetmacro{\vxraw}{ \a*cos(\thp)*cos(\php)}
+\pgfmathsetmacro{\vyraw}{ \b*cos(\thp)*sin(\php)}
+\pgfmathsetmacro{\vzraw}{-\c*sin(\thp)}
+\pgfmathsetmacro{\vlen}{sqrt(\vxraw*\vxraw+\vyraw*\vyraw+\vzraw*\vzraw)}
+\pgfmathsetmacro{\vx}{\vxraw/\vlen}
+\pgfmathsetmacro{\vy}{\vyraw/\vlen}
+\pgfmathsetmacro{\vz}{\vzraw/\vlen}
+
+% ------------------------------------------------------------
+% Original tangent plane patch
+% ------------------------------------------------------------
+\pgfmathsetmacro{\su}{0.52}
+\pgfmathsetmacro{\sv}{0.40}
+
+\coordinate (T1) at ({\xp+\su*\ux+\sv*\vx},
+                     {\yp+\su*\uy+\sv*\vy},
+                     {\zp+\su*\uz+\sv*\vz});
+
+\coordinate (T2) at ({\xp-\su*\ux+\sv*\vx},
+                     {\yp-\su*\uy+\sv*\vy},
+                     {\zp-\su*\uz+\sv*\vz});
+
+\coordinate (T3) at ({\xp-\su*\ux-\sv*\vx},
+                     {\yp-\su*\uy-\sv*\vy},
+                     {\zp-\su*\uz-\sv*\vz});
+
+\coordinate (T4) at ({\xp+\su*\ux-\sv*\vx},
+                     {\yp+\su*\uy-\sv*\vy},
+                     {\zp+\su*\uz-\sv*\vz});
+
+\filldraw[tangentplane] (T1)--(T2)--(T3)--(T4)--cycle;
+
+\node[centerpoint] at (O) {};
+\node[surfpoint] at (P) {};
+
+% ------------------------------------------------------------
+% Transformed upper plane
+% ------------------------------------------------------------
+\pgfmathsetmacro{\h}{1.75}
+\pgfmathsetmacro{\du}{-1.05}
+\pgfmathsetmacro{\dv}{0.92}
+
+% transformed in-plane basis
+\pgfmathsetmacro{\tuxraw}{0.95*\ux + 0.28*\vx}
+\pgfmathsetmacro{\tuyraw}{0.95*\uy + 0.28*\vy}
+\pgfmathsetmacro{\tuzraw}{0.95*\uz + 0.28*\vz}
+\pgfmathsetmacro{\tulen}{sqrt(\tuxraw*\tuxraw+\tuyraw*\tuyraw+\tuzraw*\tuzraw)}
+\pgfmathsetmacro{\tux}{\tuxraw/\tulen}
+\pgfmathsetmacro{\tuy}{\tuyraw/\tulen}
+\pgfmathsetmacro{\tuz}{\tuzraw/\tulen}
+
+\pgfmathsetmacro{\tvxraw}{-0.16*\ux + 1.08*\vx}
+\pgfmathsetmacro{\tvyraw}{-0.16*\uy + 1.08*\vy}
+\pgfmathsetmacro{\tvzraw}{-0.16*\uz + 1.08*\vz}
+\pgfmathsetmacro{\tvlen}{sqrt(\tvxraw*\tvxraw+\tvyraw*\tvyraw+\tvzraw*\tvzraw)}
+\pgfmathsetmacro{\tvx}{\tvxraw/\tvlen}
+\pgfmathsetmacro{\tvy}{\tvyraw/\tvlen}
+\pgfmathsetmacro{\tvz}{\tvzraw/\tvlen}
+
+\coordinate (Pup) at ({\xp+\h*\nx+\du*\ux+\dv*\vx},
+                      {\yp+\h*\ny+\du*\uy+\dv*\vy},
+                      {\zp+\h*\nz+\du*\uz+\dv*\vz});
+
+\pgfmathsetmacro{\suu}{0.56}
+\pgfmathsetmacro{\svv}{0.42}
+
+\coordinate (U1) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+\suu*\tux+\svv*\tvx},
+                     {\yp+\h*\ny+\du*\uy+\dv*\vy+\suu*\tuy+\svv*\tvy},
+                     {\zp+\h*\nz+\du*\uz+\dv*\vz+\suu*\tuz+\svv*\tvz});
+
+\coordinate (U2) at ({\xp+\h*\nx+\du*\ux+\dv*\vx-\suu*\tux+\svv*\tvx},
+                     {\yp+\h*\ny+\du*\uy+\dv*\vy-\suu*\tuy+\svv*\tvy},
+                     {\zp+\h*\nz+\du*\uz+\dv*\vz-\suu*\tuz+\svv*\tvz});
+
+\coordinate (U3) at ({\xp+\h*\nx+\du*\ux+\dv*\vx-\suu*\tux-\svv*\tvx},
+                     {\yp+\h*\ny+\du*\uy+\dv*\vy-\suu*\tuy-\svv*\tvy},
+                     {\zp+\h*\nz+\du*\uz+\dv*\vz-\suu*\tuz-\svv*\tvz});
+
+\coordinate (U4) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+\suu*\tux-\svv*\tvx},
+                     {\yp+\h*\ny+\du*\uy+\dv*\vy+\suu*\tuy-\svv*\tvy},
+                     {\zp+\h*\nz+\du*\uz+\dv*\vz+\suu*\tuz-\svv*\tvz});
+
+% dashed vectors from original to transformed plane
+\draw[liftarrow] (T1) -- (U1);
+\draw[liftarrow] (T2) -- (U2);
+\draw[liftarrow] (T3) -- (U3);
+\draw[liftarrow] (T4) -- (U4);
+
+% transformed plane
+\filldraw[upperplane] (U1)--(U2)--(U3)--(U4)--cycle;
+
+% ------------------------------------------------------------
+% Normal on transformed plane
+% n_M = normalized cross(Mw_1, Mw_2)
+% ------------------------------------------------------------
+\pgfmathsetmacro{\mnxraw}{\tuy*\tvz-\tuz*\tvy}
+\pgfmathsetmacro{\mnyraw}{\tuz*\tvx-\tux*\tvz}
+\pgfmathsetmacro{\mnzraw}{\tux*\tvy-\tuy*\tvx}
+\pgfmathsetmacro{\mnlen}{sqrt(\mnxraw*\mnxraw+\mnyraw*\mnyraw+\mnzraw*\mnzraw)}
+
+% orient it roughly toward the original outward normal
+\pgfmathsetmacro{\sgn}{ifthenelse(\mnxraw*\nx+\mnyraw*\ny+\mnzraw*\nz < 0,-1,1)}
+
+\pgfmathsetmacro{\mnx}{\sgn*\mnxraw/\mnlen}
+\pgfmathsetmacro{\mny}{\sgn*\mnyraw/\mnlen}
+\pgfmathsetmacro{\mnz}{\sgn*\mnzraw/\mnlen}
+
+% ------------------------------------------------------------
+% Omega and angle are now drawn from the transformed plane
+% ------------------------------------------------------------
+\pgfmathsetmacro{\alpha}{33}
+\pgfmathsetmacro{\Ln}{0.88}
+\pgfmathsetmacro{\Lw}{1.12}
+\pgfmathsetmacro{\Rarc}{0.30}
+
+% omega lies in span{n_M, M omega_1}
+\pgfmathsetmacro{\wx}{cos(\alpha)*\mnx + sin(\alpha)*\tux}
+\pgfmathsetmacro{\wy}{cos(\alpha)*\mny + sin(\alpha)*\tuy}
+\pgfmathsetmacro{\wz}{cos(\alpha)*\mnz + sin(\alpha)*\tuz}
+
+\coordinate (Nend) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+\Ln*\mnx},
+                       {\yp+\h*\ny+\du*\uy+\dv*\vy+\Ln*\mny},
+                       {\zp+\h*\nz+\du*\uz+\dv*\vz+\Ln*\mnz});
+
+\coordinate (Wend) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+\Lw*\wx},
+                       {\yp+\h*\ny+\du*\uy+\dv*\vy+\Lw*\wy},
+                       {\zp+\h*\nz+\du*\uz+\dv*\vz+\Lw*\wz});
+
+\draw[normalarrow] (Pup) -- (Nend);
+\draw[omegaarrow]  (Pup) -- (Wend);
+
+% angle arc on the transformed plane side
+\draw[anglearc]
+    plot[domain=0:\alpha, samples=40, variable=\t]
+    ({\xp+\h*\nx+\du*\ux+\dv*\vx+\Rarc*(cos(\t)*\mnx + sin(\t)*\tux)},
+     {\yp+\h*\ny+\du*\uy+\dv*\vy+\Rarc*(cos(\t)*\mny + sin(\t)*\tuy)},
+     {\zp+\h*\nz+\du*\uz+\dv*\vz+\Rarc*(cos(\t)*\mnz + sin(\t)*\tuz)});
+
+% local transformed basis arrows
+\coordinate (MuEnd) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+0.58*\tux},
+                        {\yp+\h*\ny+\du*\uy+\dv*\vy+0.58*\tuy},
+                        {\zp+\h*\nz+\du*\uz+\dv*\vz+0.58*\tuz});
+
+\coordinate (MvEnd) at ({\xp+\h*\nx+\du*\ux+\dv*\vx+0.52*\tvx},
+                        {\yp+\h*\ny+\du*\uy+\dv*\vy+0.52*\tvy},
+                        {\zp+\h*\nz+\du*\uz+\dv*\vz+0.52*\tvz});
+
+\draw[localarrow] (Pup) -- (MuEnd);
+\draw[localarrow] (Pup) -- (MvEnd);
+
+% ------------------------------------------------------------
+% Labels
+% ------------------------------------------------------------
+\node[labelbox, text=black, anchor=west] at (Wend)
+    {$\boldsymbol{\omega}$};
+
+\node[labelbox, text=black, anchor=south west] at (Nend)
+    {$\mathbf n$};
+
+\pgfmathsetmacro{\midang}{0.5*\alpha}
+\coordinate (ThetaLabel) at
+    ({\xp+\h*\nx+\du*\ux+\dv*\vx+(\Rarc+0.12)*(cos(\midang)*\mnx + sin(\midang)*\tux)},
+     {\yp+\h*\ny+\du*\uy+\dv*\vy+(\Rarc+0.12)*(cos(\midang)*\mny + sin(\midang)*\tuy)},
+     {\zp+\h*\nz+\du*\uz+\dv*\vz+(\Rarc+0.12)*(cos(\midang)*\mnz + sin(\midang)*\tuz)});
+
+\node[labelbox, text=black] at (ThetaLabel) {$\theta$};
+
+\node[labelbox, text=black, anchor=west] at ($(MuEnd)+(0.16,0.10,0)$)
+    {$M\boldsymbol{\omega}_1$};
+
+\node[labelbox, text=black, anchor=south west] at ($(MvEnd)+(0.10,0.14,0)$)
+    {$M\boldsymbol{\omega}_2$};
+
+\node[labelbox, text=black, anchor=south west] at ($(Pup)+(0.22,-0.04,0)$)
+    {$M\,\mathrm{d}\boldsymbol{\omega}$};
+
+\end{tikzpicture}
+
+\end{document}

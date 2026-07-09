@@ -6,25 +6,57 @@ Compile Markdown to beautiful, LaTeX-level HTML.
 
 import hashlib
 import json
-import os
 import subprocess
-import sys
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 
 import yaml
 import frontmatter
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import markdown
-from pymdownx import superfences, arithmatex
+
+
+CACHE_VERSION = 2
+
+
+class LatexMacroError(ValueError):
+    """Raised when a custom LaTeX macro is invalid or cannot be expanded."""
+
+
+@dataclass(frozen=True)
+class LatexMacro:
+    name: str
+    args: int
+    body: str
+    source: str
 
 
 class BlogBuilder:
-    def __init__(self, config_path="config.yaml"):
+    RESERVED_LATEX_COMMANDS = frozenset({
+        "begin", "end", "label", "ref", "tag", "nonumber", "notag",
+        "frac", "dfrac", "tfrac", "sqrt", "left", "right", "middle",
+        "sum", "prod", "int", "iint", "iiint", "oint", "lim",
+        "sin", "cos", "tan", "cot", "sec", "csc", "log", "ln", "exp",
+        "text", "mathrm", "mathit", "mathbf", "mathsf", "mathtt",
+        "mathbb", "mathcal", "mathfrak", "boldsymbol", "operatorname",
+        "cdot", "times", "leq", "geq", "neq", "in", "notin", "subset",
+        "subseteq", "supset", "supseteq", "cup", "cap", "forall", "exists",
+    })
+    LATEX_MATH_ENVIRONMENTS = frozenset({
+        "equation", "equation*", "align", "align*", "aligned", "alignat",
+        "alignat*", "gather", "gather*", "multline", "multline*", "split",
+        "cases", "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix",
+        "Vmatrix", "smallmatrix",
+    })
+    MAX_MACRO_EXPANSION_DEPTH = 50
+
+    def __init__(self, config_path="config.yaml", skip_pdf=False):
+        self.skip_pdf = skip_pdf
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 
@@ -134,6 +166,488 @@ class BlogBuilder:
             shutil.copytree(src_assets, dst_assets)
 
     # ------------------------------------------------------------------ #
+    # Custom LaTeX math macros
+    # ------------------------------------------------------------------ #
+    def _latex_macro_error(self, message, source_name=None, source_text=None, pos=None):
+        location = str(source_name) if source_name else "latex_macros"
+        if source_text is not None and pos is not None:
+            line, col = self._line_col(source_text, pos)
+            location = f"{location}:{line}:{col}"
+        raise LatexMacroError(f"{location}: {message}")
+
+    @staticmethod
+    def _line_col(text: str, pos: int):
+        pos = max(0, min(pos, len(text)))
+        line = text.count("\n", 0, pos) + 1
+        last_newline = text.rfind("\n", 0, pos)
+        return line, pos - last_newline
+
+    def _normalize_latex_macros(self, raw_macros, source="latex_macros"):
+        """Validate and normalize a latex_macros mapping.
+
+        Supported forms:
+          latex_macros:
+            R: "\\mathbb{R}"                  # zero-argument shorthand
+            esm:
+              args: 1
+              body: "\\left\\langle #1\\right\\rangle"
+        """
+        if not raw_macros:
+            return {}
+        if not isinstance(raw_macros, dict):
+            self._latex_macro_error("expected a mapping of macro names to definitions", source)
+
+        macros = {}
+        for raw_name, spec in raw_macros.items():
+            name = str(raw_name).strip()
+            if name.startswith("\\"):
+                name = name[1:]
+            if not re.fullmatch(r"[A-Za-z]+", name):
+                self._latex_macro_error(
+                    f"invalid macro name {raw_name!r}; use only letters, with no arguments in the name",
+                    source,
+                )
+            if name in self.RESERVED_LATEX_COMMANDS:
+                self._latex_macro_error(f"cannot redefine reserved LaTeX command \\{name}", source)
+            if name in macros:
+                self._latex_macro_error(f"duplicate macro definition for \\{name}", source)
+
+            if isinstance(spec, str):
+                args = 0
+                body = spec
+            elif isinstance(spec, dict):
+                if "args" not in spec or "body" not in spec:
+                    self._latex_macro_error(
+                        f"\\{name} must define both 'args' and 'body'",
+                        source,
+                    )
+                args = spec["args"]
+                body = spec["body"]
+            else:
+                self._latex_macro_error(
+                    f"\\{name} must be a string or a mapping with 'args' and 'body'",
+                    source,
+                )
+
+            if isinstance(args, bool) or not isinstance(args, int) or not (0 <= args <= 9):
+                self._latex_macro_error(f"\\{name} args must be an integer from 0 to 9", source)
+            if not isinstance(body, str):
+                self._latex_macro_error(f"\\{name} body must be a string", source)
+            self._validate_latex_macro_body(name, args, body, source)
+            macros[name] = LatexMacro(name=name, args=args, body=body, source=str(source))
+
+        return macros
+
+    def _validate_latex_macro_body(self, name: str, args: int, body: str, source: str):
+        i = 0
+        while i < len(body):
+            if body[i] == "\\" and i + 1 < len(body):
+                i += 2
+                continue
+            if body[i] == "#":
+                if i + 1 >= len(body) or not body[i + 1].isdigit():
+                    self._latex_macro_error(
+                        f"\\{name} body has invalid parameter marker; use #1..#{args}",
+                        source,
+                    )
+                index = int(body[i + 1])
+                if index == 0 or index > args:
+                    self._latex_macro_error(
+                        f"\\{name} body references #{index}, but args is {args}",
+                        source,
+                    )
+                i += 2
+                continue
+            i += 1
+
+    def _latex_macros_for_metadata(self, metadata, path=None):
+        global_macros = self._normalize_latex_macros(
+            self.config.get("latex_macros", {}),
+            "config.yaml:latex_macros",
+        )
+        local_macros = self._normalize_latex_macros(
+            (metadata or {}).get("latex_macros", {}),
+            f"{path}:latex_macros" if path else "frontmatter:latex_macros",
+        )
+        overlap = sorted(set(global_macros) & set(local_macros))
+        if overlap:
+            names = ", ".join(f"\\{name}" for name in overlap)
+            self._latex_macro_error(
+                f"duplicate macro definition across config and frontmatter: {names}",
+                path or "latex_macros",
+            )
+        macros = {**global_macros, **local_macros}
+        self._validate_latex_macro_cycles(macros, path or "latex_macros")
+        return macros
+
+    def _validate_latex_macro_cycles(self, macros, source):
+        dependencies = {
+            name: {
+                dep for dep in self._latex_command_names(macro.body)
+                if dep in macros
+            }
+            for name, macro in macros.items()
+        }
+        state = {}
+
+        def visit(name, trail):
+            mark = state.get(name)
+            if mark == "done":
+                return
+            if mark == "visiting":
+                start = trail.index(name)
+                cycle = trail[start:]
+                chain = " -> ".join(f"\\{item}" for item in cycle)
+                self._latex_macro_error(f"recursive LaTeX macro definitions: {chain}", source)
+            state[name] = "visiting"
+            for dep in dependencies[name]:
+                visit(dep, trail + [dep])
+            state[name] = "done"
+
+        for name in macros:
+            visit(name, [name])
+
+    @staticmethod
+    def _latex_command_names(text: str):
+        names = []
+        i = 0
+        while i < len(text):
+            if text[i] == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
+                j = i + 2
+                while j < len(text) and text[j].isalpha():
+                    j += 1
+                names.append(text[i + 1:j])
+                i = j
+            else:
+                i += 1
+        return names
+
+    def _expand_latex_macros_in_metadata(self, metadata, macros, path=None):
+        if not macros:
+            return dict(metadata or {})
+
+        expanded = dict(metadata or {})
+        for key in ("title", "abstract", "category"):
+            if isinstance(expanded.get(key), str):
+                expanded[key] = self._expand_latex_macros_in_markdown(
+                    expanded[key],
+                    macros,
+                    path,
+                )
+
+        for key in ("keywords", "tags"):
+            if isinstance(expanded.get(key), list):
+                expanded[key] = [
+                    self._expand_latex_macros_in_markdown(item, macros, path)
+                    if isinstance(item, str) else item
+                    for item in expanded[key]
+                ]
+
+        authors = expanded.get("authors")
+        if isinstance(authors, list):
+            expanded_authors = []
+            for author in authors:
+                if not isinstance(author, dict):
+                    expanded_authors.append(author)
+                    continue
+                author = dict(author)
+                for key in ("name", "affiliation"):
+                    if isinstance(author.get(key), str):
+                        author[key] = self._expand_latex_macros_in_markdown(
+                            author[key],
+                            macros,
+                            path,
+                        )
+                expanded_authors.append(author)
+            expanded["authors"] = expanded_authors
+
+        return expanded
+
+    def _expand_latex_macros_in_markdown(self, content: str, macros, source_name=None) -> str:
+        """Expand custom macros only inside LaTeX math regions.
+
+        Markdown code fences and inline code spans are copied verbatim. This
+        keeps commands in prose or code examples from being rewritten.
+        """
+        if not macros or not content:
+            return content
+
+        out = []
+        i = 0
+        while i < len(content):
+            fence_end = self._fenced_code_block_end(content, i)
+            if fence_end is not None:
+                out.append(content[i:fence_end])
+                i = fence_end
+                continue
+
+            inline_code_end = self._inline_code_span_end(content, i)
+            if inline_code_end is not None:
+                out.append(content[i:inline_code_end])
+                i = inline_code_end
+                continue
+
+            math_span = self._math_span_at(content, i)
+            if math_span is not None:
+                open_start, inner_start, inner_end, close_end = math_span
+                out.append(content[open_start:inner_start])
+                inner = content[inner_start:inner_end]
+                out.append(self._expand_latex_macro_text(
+                    inner,
+                    macros,
+                    source_name=source_name,
+                    source_text=content,
+                    offset=inner_start,
+                ))
+                out.append(content[inner_end:close_end])
+                i = close_end
+                continue
+
+            out.append(content[i])
+            i += 1
+
+        return "".join(out)
+
+    def _expand_latex_macro_text(
+        self,
+        text: str,
+        macros,
+        source_name=None,
+        source_text=None,
+        offset=0,
+        stack=(),
+        depth=0,
+    ) -> str:
+        if depth > self.MAX_MACRO_EXPANSION_DEPTH:
+            chain = " -> ".join(f"\\{name}" for name in stack) or "unknown"
+            self._latex_macro_error(
+                f"macro expansion exceeded depth limit near {chain}",
+                source_name,
+                source_text,
+                offset,
+            )
+
+        out = []
+        i = 0
+        while i < len(text):
+            if text[i] == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
+                j = i + 2
+                while j < len(text) and text[j].isalpha():
+                    j += 1
+                name = text[i + 1:j]
+                if name not in macros:
+                    out.append(text[i:j])
+                    i = j
+                    continue
+
+                if name in stack:
+                    chain = " -> ".join(f"\\{item}" for item in (*stack, name))
+                    self._latex_macro_error(
+                        f"recursive LaTeX macro expansion: {chain}",
+                        source_name,
+                        source_text,
+                        offset + i,
+                    )
+
+                macro = macros[name]
+                args = []
+                arg_pos = j
+                for arg_index in range(1, macro.args + 1):
+                    arg_pos = self._skip_latex_arg_space(text, arg_pos)
+                    if arg_pos >= len(text) or text[arg_pos] != "{":
+                        self._latex_macro_error(
+                            f"\\{name} expects argument {arg_index} in braces",
+                            source_name,
+                            source_text,
+                            offset + arg_pos,
+                        )
+                    arg_body, arg_pos = self._parse_latex_group(
+                        text,
+                        arg_pos,
+                        source_name,
+                        source_text,
+                        offset,
+                    )
+                    args.append(self._expand_latex_macro_text(
+                        arg_body,
+                        macros,
+                        source_name=source_name,
+                        source_text=source_text,
+                        offset=offset + arg_pos - len(arg_body) - 1,
+                        stack=stack,
+                        depth=depth + 1,
+                    ))
+
+                replacement = macro.body
+                for index, value in enumerate(args, start=1):
+                    replacement = replacement.replace(f"#{index}", value)
+                out.append(self._expand_latex_macro_text(
+                    replacement,
+                    macros,
+                    source_name=source_name,
+                    source_text=source_text,
+                    offset=offset + i,
+                    stack=(*stack, name),
+                    depth=depth + 1,
+                ))
+                i = arg_pos
+                continue
+
+            out.append(text[i])
+            i += 1
+
+        return "".join(out)
+
+    @staticmethod
+    def _skip_latex_arg_space(text: str, pos: int) -> int:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        return pos
+
+    def _parse_latex_group(self, text: str, pos: int, source_name, source_text, offset):
+        depth = 1
+        i = pos + 1
+        while i < len(text):
+            if text[i] == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[pos + 1:i], i + 1
+            i += 1
+        self._latex_macro_error(
+            "unclosed macro argument group",
+            source_name,
+            source_text,
+            offset + pos,
+        )
+
+    def _fenced_code_block_end(self, text: str, pos: int):
+        if pos != 0 and text[pos - 1] != "\n":
+            return None
+        line_end = text.find("\n", pos)
+        if line_end == -1:
+            line_end = len(text)
+        line = text[pos:line_end]
+        opener = re.match(r"[ \t]{0,3}(`{3,}|~{3,})", line)
+        if not opener:
+            return None
+
+        marker = opener.group(1)
+        marker_char = re.escape(marker[0])
+        min_len = len(marker)
+        closer = re.compile(rf"[ \t]{{0,3}}{marker_char}{{{min_len},}}[ \t]*$")
+        scan = line_end + 1 if line_end < len(text) else len(text)
+        while scan < len(text):
+            next_end = text.find("\n", scan)
+            if next_end == -1:
+                next_end = len(text)
+            if closer.match(text[scan:next_end]):
+                return next_end + (1 if next_end < len(text) else 0)
+            scan = next_end + 1
+        return len(text)
+
+    @staticmethod
+    def _inline_code_span_end(text: str, pos: int):
+        if text[pos] != "`":
+            return None
+        run_end = pos + 1
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        marker = text[pos:run_end]
+        end = text.find(marker, run_end)
+        if end == -1:
+            return None
+        return end + len(marker)
+
+    def _math_span_at(self, text: str, pos: int):
+        if text.startswith("$$", pos) and not self._is_escaped(text, pos):
+            close = self._find_unescaped_token(text, "$$", pos + 2)
+            if close is not None:
+                return pos, pos + 2, close, close + 2
+
+        if text.startswith("\\[", pos) and not self._is_escaped(text, pos):
+            close = self._find_unescaped_token(text, "\\]", pos + 2)
+            if close is not None:
+                return pos, pos + 2, close, close + 2
+
+        if text.startswith("\\(", pos) and not self._is_escaped(text, pos):
+            close = self._find_unescaped_token(text, "\\)", pos + 2)
+            if close is not None:
+                return pos, pos + 2, close, close + 2
+
+        env_span = self._math_environment_span_at(text, pos)
+        if env_span is not None:
+            return env_span
+
+        if text[pos] == "$" and not self._is_escaped(text, pos):
+            if pos + 1 < len(text) and text[pos + 1] == "$":
+                return None
+            close = self._find_inline_math_close(text, pos + 1)
+            if close is not None:
+                return pos, pos + 1, close, close + 1
+
+        return None
+
+    def _math_environment_span_at(self, text: str, pos: int):
+        if not text.startswith("\\begin{", pos) or self._is_escaped(text, pos):
+            return None
+        begin = re.match(r"\\begin\{([A-Za-z*]+)\}", text[pos:])
+        if not begin:
+            return None
+        env = begin.group(1)
+        if env not in self.LATEX_MATH_ENVIRONMENTS:
+            return None
+
+        inner_start = pos + begin.end()
+        env_re = re.compile(r"\\(begin|end)\{" + re.escape(env) + r"\}")
+        depth = 1
+        for match in env_re.finditer(text, inner_start):
+            if self._is_escaped(text, match.start()):
+                continue
+            if match.group(1) == "begin":
+                depth += 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    return pos, inner_start, match.start(), match.end()
+        return None
+
+    @staticmethod
+    def _is_escaped(text: str, pos: int) -> bool:
+        backslashes = 0
+        i = pos - 1
+        while i >= 0 and text[i] == "\\":
+            backslashes += 1
+            i -= 1
+        return backslashes % 2 == 1
+
+    def _find_unescaped_token(self, text: str, token: str, start: int):
+        pos = text.find(token, start)
+        while pos != -1:
+            if not self._is_escaped(text, pos):
+                return pos
+            pos = text.find(token, pos + len(token))
+        return None
+
+    def _find_inline_math_close(self, text: str, start: int):
+        pos = text.find("$", start)
+        while pos != -1:
+            if self._is_escaped(text, pos):
+                pos = text.find("$", pos + 1)
+                continue
+            if (pos + 1 < len(text) and text[pos + 1] == "$") or (
+                pos - 1 >= 0 and text[pos - 1] == "$"
+            ):
+                pos = text.find("$", pos + 1)
+                continue
+            return pos
+        return None
+
+    # ------------------------------------------------------------------ #
     # PDF generation — cache, LaTeX conversion, xelatex compilation
     # ------------------------------------------------------------------ #
     def _load_cache(self):
@@ -151,18 +665,37 @@ class BlogBuilder:
         )
 
     def _content_hash(self, path: Path) -> str:
-        """MD5 of the raw markdown file content."""
-        return hashlib.md5(path.read_bytes()).hexdigest()
+        """Hash PDF inputs so template/config changes invalidate the cache."""
+        digest = hashlib.sha256()
+        for input_path in (
+            path,
+            self.root / "build.py",
+            self.root / "config.yaml",
+            self.template_dir / "article.tex",
+        ):
+            digest.update(input_path.read_bytes())
+        return digest.hexdigest()
 
     def _should_rebuild_pdf(self, post: dict) -> bool:
-        """Check whether the PDF needs to be rebuilt (source changed)."""
+        """Check whether the PDF needs to be rebuilt."""
         key = str(post["path"].relative_to(self.root))
         new_hash = self._content_hash(post["path"])
-        old_hash = self._cache.get(key)
-        if old_hash != new_hash:
-            self._cache[key] = new_hash
-            return True
-        return False
+        cached = self._cache.get(key, {})
+        pdf_path = self.root / ".tex_build" / f"{post['id']}.pdf"
+        return (
+            not isinstance(cached, dict)
+            or cached.get("version") != CACHE_VERSION
+            or cached.get("source_hash") != new_hash
+            or not pdf_path.exists()
+        )
+
+    def _mark_pdf_built(self, post: dict) -> None:
+        """Record a successful PDF build."""
+        key = str(post["path"].relative_to(self.root))
+        self._cache[key] = {
+            "version": CACHE_VERSION,
+            "source_hash": self._content_hash(post["path"]),
+        }
 
     def _markdown_to_latex(self, content: str) -> str:
         """Convert markdown content to LaTeX body.
@@ -239,6 +772,20 @@ class BlogBuilder:
                 i += 1
                 continue
 
+            # Native LaTeX math environments are kept raw for PDF output.
+            env_m = re.match(r"^\\begin\{([A-Za-z*]+)\}", line.strip())
+            if env_m and env_m.group(1) in self.LATEX_MATH_ENVIRONMENTS:
+                env = env_m.group(1)
+                math_lines = [line]
+                while i + 1 < len(lines):
+                    i += 1
+                    math_lines.append(lines[i])
+                    if re.search(r"\\end\{" + re.escape(env) + r"\}", lines[i]):
+                        break
+                out.append("\n".join(math_lines))
+                i += 1
+                continue
+
             if line.strip() == "---" or line.strip() == "***":
                 out.append("\\vspace{4pt}")
                 out.append("\\rule{\\textwidth}{0.5pt}")
@@ -246,17 +793,28 @@ class BlogBuilder:
                 i += 1
                 continue
 
-            # Headings
+            # Headings — protect math before escaping
             hm = re.match(r"^(#{1,6})\s+(.+)$", line)
             if hm:
                 level = len(hm.group(1))
                 title = hm.group(2).strip()
+                # Protect math spans from escaping
+                math_spans_h = []
+                def save_math_h(m):
+                    math_spans_h.append(m.group(0))
+                    return f"<MATHH{len(math_spans_h)-1}>"
+                title = re.sub(r"\$[^$]+\$", save_math_h, title)
+                title = re.sub(r"\\\(.+?\\\)", save_math_h, title)
                 title = self._latex_escape(title)
-                if level == 1:
+                for math_index, math in enumerate(math_spans_h):
+                    title = title.replace(f"<MATHH{math_index}>", math)
+                # The PDF title comes from frontmatter, so Markdown H2 is the
+                # natural top-level section inside an article body.
+                if level <= 2:
                     out.append(f"\\section{{{title}}}")
-                elif level == 2:
-                    out.append(f"\\subsection{{{title}}}")
                 elif level == 3:
+                    out.append(f"\\subsection{{{title}}}")
+                elif level == 4:
                     out.append(f"\\subsubsection{{{title}}}")
                 else:
                     out.append(f"\\paragraph{{{title}}}")
@@ -327,69 +885,190 @@ class BlogBuilder:
 
     def _latex_inline(self, text: str) -> str:
         """Convert inline markdown to LaTeX."""
-        # Protect math first
-        math_spans = []
-        def save_math(m):
-            math_spans.append(m.group(0))
-            return f"<MATH{len(math_spans)-1}>"
-        text = re.sub(r"\$[^$]+\$", save_math, text)
-        text = re.sub(r"\\\(.+?\\\)", save_math, text)
+        text, math_spans = self._protect_latex_math_spans(text)
+        raw_parts = []
 
-        # Bold
-        text = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", text)
-        # Italic
-        text = re.sub(r"\*(.+?)\*", r"\\textit{\1}", text)
-        # Inline code
-        text = re.sub(r"`([^`]+)`", r"\\texttt{\1}", text)
+        def protect_raw(value):
+            token = f"@@LATEXRAW{len(raw_parts)}@@"
+            raw_parts.append(value)
+            return token
+
         # Images ![alt](path) — MUST be before links
         def replace_img(m):
             alt = m.group(1)
             path = m.group(2)
+            # Parse width specifier: |width=60% or |width=300px at the end
+            width = "0.88\\linewidth"
+            wm = re.search(r'\|width=([^|]+)$', alt)
+            if wm:
+                w = wm.group(1).strip()
+                alt = alt[:wm.start()]
+                if w.endswith('%'):
+                    try:
+                        fraction = max(0.05, min(float(w[:-1]) / 100, 1.0))
+                    except ValueError:
+                        fraction = 0.88
+                    width = f"{fraction:.3g}\\linewidth"
+                elif re.fullmatch(r"\d+(?:\.\d+)?(?:pt|mm|cm|in|em|ex)", w):
+                    width = w
             # Strip fig:key| or tbl:key| prefix from caption
-            caption = re.sub(r'^(?:fig|tbl):[a-zA-Z0-9_-]+\|', '', alt)
-            return f"\\begin{{figure}}[H]\n\\centering\n\\includegraphics[width=0.85\\textwidth]{{{path}}}\n\\caption{{{caption}}}\n\\end{{figure}}"
+            label = ""
+            label_m = re.match(r'^((?:fig|tbl):[a-zA-Z0-9_-]+)\|(.*)$', alt)
+            if label_m:
+                label = f"\n\\label{{{label_m.group(1)}}}"
+                caption = label_m.group(2)
+            else:
+                caption = alt
+            caption = self._latex_escape(caption)
+            path = self._latex_detokenize(path)
+            return protect_raw(
+                "\\begin{figure}[H]\n"
+                "\\centering\n"
+                f"\\includegraphics[width={width},max width=\\linewidth]{{\\detokenize{{{path}}}}}\n"
+                f"\\caption{{{caption}}}{label}\n"
+                "\\end{figure}"
+            )
         text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_img, text)
-        # Links [text](url)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\\href{\2}{\1}", text)
-        # Cross-references
-        text = re.sub(r"\[@eq:([^\]]+)\]", r"\\textsf{公式 \\ref{eq:\1}}", text)
-        text = re.sub(r"\[@fig:([^\]]+)\]", r"\\textsf{图 \\ref{fig:\1}}", text)
-        text = re.sub(r"\[@tbl:([^\]]+)\]", r"\\textsf{表 \\ref{tbl:\1}}", text)
 
-        # Restore math
-        for i, m in enumerate(math_spans):
-            text = text.replace(f"<MATH{i}>", m)
+        # Links [text](url)
+        def replace_link(m):
+            label = m.group(1)
+            url = m.group(2)
+            safe_url = self._latex_url_arg(url)
+            if label.strip() == url.strip():
+                return protect_raw(f"\\url{{{safe_url}}}")
+            return protect_raw(f"\\href{{{safe_url}}}{{{self._latex_escape(label)}}}")
+        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, text)
+
+        # Cross-references
+        text = re.sub(
+            r"\[@eq:([^\]]+)\]",
+            lambda m: protect_raw(f"\\textsf{{公式 \\ref{{eq:{m.group(1)}}}}}"),
+            text,
+        )
+        text = re.sub(
+            r"\[@fig:([^\]]+)\]",
+            lambda m: protect_raw(f"\\textsf{{图 \\ref{{fig:{m.group(1)}}}}}"),
+            text,
+        )
+        text = re.sub(
+            r"\[@tbl:([^\]]+)\]",
+            lambda m: protect_raw(f"\\textsf{{表 \\ref{{tbl:{m.group(1)}}}}}"),
+            text,
+        )
+        text = re.sub(
+            r"\\textsuperscript\{\[[0-9,]+\]\}",
+            lambda m: protect_raw(m.group(0)),
+            text,
+        )
+
+        # Bold / italic / inline code become protected LaTeX fragments.
+        text = re.sub(
+            r"\*\*(.+?)\*\*",
+            lambda m: protect_raw(f"\\textbf{{{self._latex_escape(m.group(1))}}}"),
+            text,
+        )
+        text = re.sub(
+            r"(?<!\*)\*([^*]+)\*(?!\*)",
+            lambda m: protect_raw(f"\\emph{{{self._latex_escape(m.group(1))}}}"),
+            text,
+        )
+        text = re.sub(
+            r"`([^`]+)`",
+            lambda m: protect_raw(f"\\texttt{{{self._latex_escape(m.group(1))}}}"),
+            text,
+        )
+
+        text = self._latex_escape(text)
+
+        # Restore protected LaTeX fragments, then math placeholders that may
+        # occur inside captions or link labels.
+        for i in range(len(raw_parts) - 1, -1, -1):
+            text = text.replace(f"@@LATEXRAW{i}@@", raw_parts[i])
+        for i, math in enumerate(math_spans):
+            text = text.replace(f"@@LATEXMATH{i}@@", math)
 
         return text
+
+    def _protect_latex_math_spans(self, text: str):
+        math_spans = []
+        out = []
+        i = 0
+        while i < len(text):
+            span = self._math_span_at(text, i)
+            if span is not None:
+                start, _, _, end = span
+                token = f"@@LATEXMATH{len(math_spans)}@@"
+                math_spans.append(text[start:end])
+                out.append(token)
+                i = end
+                continue
+            out.append(text[i])
+            i += 1
+        return "".join(out), math_spans
 
     @staticmethod
     def _latex_escape(text: str) -> str:
         """Escape LaTeX special characters in plain text."""
-        for ch in ["&", "%", "$", "#", "_", "{", "}", "~", "^"]:
-            text = text.replace(ch, "\\" + ch)
-        return text
+        replacements = {
+            "\\": r"\textbackslash{}",
+            "&": r"\&",
+            "%": r"\%",
+            "$": r"\$",
+            "#": r"\#",
+            "_": r"\_",
+            "{": r"\{",
+            "}": r"\}",
+            "~": r"\textasciitilde{}",
+            "^": r"\textasciicircum{}",
+        }
+        return "".join(replacements.get(ch, ch) for ch in str(text))
+
+    @staticmethod
+    def _latex_url_arg(url: str) -> str:
+        return (
+            str(url)
+            .replace("\\", "/")
+            .replace("%", r"\%")
+            .replace("#", r"\#")
+            .replace("{", r"\{")
+            .replace("}", r"\}")
+        )
+
+    @staticmethod
+    def _latex_detokenize(text: str) -> str:
+        return str(text).replace("{", r"\{").replace("}", r"\}")
 
     def _compile_pdf(self, tex_path: Path, out_dir: Path) -> bool:
         """Run xelatex twice to compile a PDF. Returns True on success."""
         out_dir.mkdir(parents=True, exist_ok=True)
         jobname = tex_path.stem
         pdf_path = out_dir / f"{jobname}.pdf"
+        command = [
+            "xelatex",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-output-directory", str(out_dir),
+            "-jobname", jobname,
+            str(tex_path),
+        ]
+
         for run in (1, 2):
-            subprocess.run(
-                [
-                    "xelatex",
-                    "-interaction=nonstopmode",
-                    "-output-directory", str(out_dir),
-                    "-jobname", jobname,
-                    str(tex_path),
-                ],
-                capture_output=True,
-                text=True,
-                cwd=str(self.root),   # run from project root for correct relative paths
-                timeout=60,
-            )
-        # Check if PDF was generated (xelatex may return non-zero on warnings)
-        ok = pdf_path.exists() and pdf_path.stat().st_size > 0
+            try:
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(self.root),
+                    timeout=60,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                print(f"\n  [PDF] xelatex could not run: {exc}")
+                return False
+            if result.returncode != 0:
+                break
+
+        ok = result.returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0
         if not ok:
             log_path = out_dir / f"{jobname}.log"
             tail = ""
@@ -397,8 +1076,9 @@ class BlogBuilder:
                 lines = log_path.read_text(errors="replace").splitlines()
                 tail = "\n".join(lines[-20:])
             print(f"\n  [PDF] xelatex failed:\n{tail}")
-        # Clean up aux/log files
-        for ext in (".aux", ".log", ".out", ".toc"):
+        # Keep failed-build logs for diagnosis.
+        cleanup_exts = (".aux", ".out", ".toc", ".log") if ok else (".aux", ".out", ".toc")
+        for ext in cleanup_exts:
             p = out_dir / f"{jobname}{ext}"
             if p.exists():
                 p.unlink()
@@ -409,9 +1089,11 @@ class BlogBuilder:
         post_id = post["id"]
         pdf_src = self.root / ".tex_build" / f"{post_id}.pdf"
         pdf_dst = self.output_dir / post["url"].replace(".html", ".pdf")
+        post["pdf_available"] = False
         if pdf_src.exists():
             pdf_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(pdf_src, pdf_dst)
+            post["pdf_available"] = True
 
     def _build_preamble(self) -> str:
         """Build LaTeX preamble with config values baked in."""
@@ -427,22 +1109,29 @@ class BlogBuilder:
 \\usepackage{{libertinus}}
 % ctexart handles CJK fonts automatically on macOS
 
-% ---- Geometry (compact) ----
-\\usepackage[paperwidth=190mm,paperheight=260mm,
-            top=0.55in,bottom=0.55in,
-            left=0.75in,right=0.75in,
-            includehead,includefoot]{{geometry}}
+% ---- Geometry ----
+\\usepackage[
+  a4paper,
+  top=22mm,bottom=24mm,
+  left=23mm,right=23mm,
+  headsep=7mm,footskip=10mm,
+  includeheadfoot
+]{{geometry}}
 
-% ---- Spacing (tight) ----
+% ---- Spacing ----
 \\linespread{{1.0}}
-\\setlength{{\\parskip}}{{0.2em plus 0.05em minus 0.05em}}
+\\setlength{{\\parskip}}{{0.34em plus 0.08em minus 0.06em}}
 \\setlength{{\\parindent}}{{1.2em}}
-\\setlength{{\\abovedisplayskip}}{{3pt plus 1pt minus 2pt}}
-\\setlength{{\\belowdisplayskip}}{{3pt plus 1pt minus 2pt}}
-\\setlength{{\\abovedisplayshortskip}}{{0pt plus 1pt}}
-\\setlength{{\\belowdisplayshortskip}}{{1pt plus 1pt minus 1pt}}
+\\setlength{{\\emergencystretch}}{{3em}}
+\\raggedbottom
+\\sloppy
+\\setlength{{\\abovedisplayskip}}{{7pt plus 2pt minus 2pt}}
+\\setlength{{\\belowdisplayskip}}{{7pt plus 2pt minus 2pt}}
+\\setlength{{\\abovedisplayshortskip}}{{2pt plus 1pt}}
+\\setlength{{\\belowdisplayshortskip}}{{4pt plus 1pt minus 1pt}}
 \\usepackage{{enumitem}}
-\\setlist{{nosep,leftmargin=*}}
+\\setlist{{topsep=2pt,itemsep=1pt,parsep=0pt,leftmargin=*}}
+\\usepackage{{microtype}}
 
 % ---- Colors ----
 \\usepackage{{xcolor}}
@@ -451,8 +1140,11 @@ class BlogBuilder:
 \\definecolor{{muted}}{{HTML}}{{555555}}
 
 % ---- Hyperlinks ----
+\\usepackage{{xurl}}
 \\usepackage{{hyperref}}
-\\hypersetup{{colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent}}
+\\hypersetup{{colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent,breaklinks=true}}
+\\urlstyle{{same}}
+\\Urlmuskip=0mu plus 2mu
 
 % ---- Headers / Footers ----
 \\usepackage{{fancyhdr}}
@@ -466,32 +1158,39 @@ class BlogBuilder:
 \\setlength{{\\headheight}}{{14pt}}
 
 % ---- Code blocks ----
-\\usepackage{{fancyvrb}}
-\\fvset{{fontsize=\\small,frame=single,framerule=0.4pt,framesep=6pt}}
+\\usepackage{{fvextra}}
+\\fvset{{fontsize=\\small,frame=single,framerule=0.35pt,framesep=5pt,breaklines=true,breakanywhere=true}}
 \\DefineVerbatimEnvironment{{codeverb}}{{Verbatim}}{{}}
 
 % ---- Graphics ----
 \\usepackage{{graphicx}}
 \\usepackage{{float}}
+\\usepackage[export]{{adjustbox}}
 \\graphicspath{{ {{content/}} }}
 
 % ---- Math ----
 \\usepackage{{amsmath}}
+\\allowdisplaybreaks
+\\usepackage{{unicode-math}}
+\\setmathfont{{latinmodern-math.otf}}
 
 % ---- Captions ----
 \\usepackage{{caption}}
 \\captionsetup{{font={{small,sf}},labelfont={{bf,color=accent}},labelsep=period,skip=4pt}}
 
-% ---- No titling package needed (manual compact header) ----
+% ---- Abstract box ----
+\\usepackage[most]{{tcolorbox}}
+\\newtcolorbox{{paperabstract}}{{enhanced,breakable,colback=black!2,colframe=black!18,
+  boxrule=0.35pt,arc=1.5pt,left=7pt,right=7pt,top=6pt,bottom=6pt}}
 
-% ---- Section headings (compact) ----
+% ---- Section headings ----
 \\usepackage{{titlesec}}
-\\titleformat{{\\section}}{{\\large\\bfseries\\color{{dark}}}}{{\\thesection}}{{0.6em}}{{}}[\\vspace{{-2pt}}\\rule{{\\textwidth}}{{0.5pt}}]
+\\titleformat{{\\section}}{{\\large\\bfseries\\color{{dark}}}}{{\\thesection}}{{0.65em}}{{}}[\\vspace{{-1pt}}\\rule{{\\textwidth}}{{0.35pt}}]
 \\titleformat{{\\subsection}}{{\\normalsize\\bfseries\\color{{dark}}}}{{\\thesubsection}}{{0.6em}}{{}}
 \\titleformat{{\\subsubsection}}{{\\normalsize\\bfseries\\color{{dark}}}}{{\\thesubsubsection}}{{0.6em}}{{}}
-\\titlespacing{{\\section}}{{0pt}}{{10pt plus 2pt}}{{4pt plus 2pt}}
-\\titlespacing{{\\subsection}}{{0pt}}{{8pt plus 2pt}}{{3pt plus 2pt}}
-\\titlespacing{{\\subsubsection}}{{0pt}}{{6pt plus 2pt}}{{2pt plus 2pt}}
+\\titlespacing{{\\section}}{{0pt}}{{13pt plus 3pt}}{{6pt plus 2pt}}
+\\titlespacing{{\\subsection}}{{0pt}}{{10pt plus 2pt}}{{4pt plus 2pt}}
+\\titlespacing{{\\subsubsection}}{{0pt}}{{8pt plus 2pt}}{{3pt plus 2pt}}
 
 % ---- Footnotes ----
 \\renewcommand{{\\footnotesize}}{{\\scriptsize}}"""
@@ -514,11 +1213,35 @@ class BlogBuilder:
         abstract = post.get("abstract", "")
         keywords = post.get("keywords", [])
 
-        # Get raw markdown content (strip frontmatter), preprocess equations
+        # Get raw markdown content (strip frontmatter)
         import frontmatter as fm
         raw = fm.load(str(post["path"]))
-        raw_content, _ = self._preprocess_equations(raw.content)
+        macros = self._latex_macros_for_metadata(raw.metadata, post["path"])
+
+        # Parse bibliography for LaTeX
+        raw_bib = post.get("bibliography", [])
+        bib_entries = self._normalize_bibliography(raw_bib)
+        bib_map = {key: i for i, (key, _) in enumerate(bib_entries, start=1)}
+
+        # Replace [@key] citations with LaTeX superscript refs
+        raw_content = self._expand_latex_macros_in_markdown(
+            raw.content,
+            macros,
+            post["path"],
+        )
+        raw_content = self._replace_citations_latex(raw_content, bib_map)
+
+        # Native LaTeX equation environments compile correctly as-is.
         body = self._markdown_to_latex(raw_content)
+
+        # Append bibliography if present
+        if bib_entries:
+            body += "\n\n\\section*{References}\n"
+            body += "\\begin{enumerate}[leftmargin=*,nosep]\n"
+            for key, text in bib_entries:
+                safe_text = text.replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("_", "\\_")
+                body += f"  \\item {safe_text}\n"
+            body += "\\end{enumerate}\n"
 
         # Build LaTeX preamble (static, with config baked in)
         preamble = self._build_preamble()
@@ -527,16 +1250,22 @@ class BlogBuilder:
         tex_tmpl = self.jinja.get_template("article.tex")
         tex_content = tex_tmpl.render(
             preamble=preamble,
-            journal_name=self.config.get("journal", {}).get("name", "Blog"),
-            author_name=self.config.get("author", ""),
-            title=post.get("title", ""),
-            authors=authors,
-            affiliations=affiliations,
+            journal_name=self._latex_escape(self.config.get("journal", {}).get("name", "Blog")),
+            author_name=self._latex_escape(self.config.get("author", "")),
+            title=self._latex_inline(post.get("title", "")),
+            authors=[
+                {**author, "name": self._latex_escape(author.get("name", ""))}
+                for author in authors
+            ],
+            affiliations=[
+                {**affiliation, "text": self._latex_escape(affiliation["text"])}
+                for affiliation in affiliations
+            ],
             date=post.get("date").strftime("%Y-%m-%d") if post.get("date") else "",
-            abstract=abstract,
-            keywords=keywords,
-            category=post.get("category", ""),
-            doi=post.get("doi", ""),
+            abstract=self._latex_inline(abstract),
+            keywords=[self._latex_inline(keyword) for keyword in keywords],
+            category=self._latex_escape(post.get("category", "")),
+            doi=self._latex_escape(post.get("doi", "")),
             body=body,
         )
 
@@ -544,13 +1273,19 @@ class BlogBuilder:
 
         # Compile
         print(f"  [PDF] Compiling {post['id']} ... ", end="", flush=True)
+        cached_pdf = tex_dir / f"{post_id}.pdf"
+        if cached_pdf.exists():
+            cached_pdf.unlink()
         ok = self._compile_pdf(tex_path, tex_dir)
+        post["pdf_available"] = False
         if ok:
+            self._mark_pdf_built(post)
             pdf_src = tex_dir / f"{post_id}.pdf"
             pdf_dst = self.output_dir / post["url"].replace(".html", ".pdf")
             pdf_dst.parent.mkdir(parents=True, exist_ok=True)
             if pdf_src.exists():
                 shutil.copy2(pdf_src, pdf_dst)
+                post["pdf_available"] = True
                 size_kb = pdf_dst.stat().st_size // 1024
                 print(f"✓  ({size_kb} KB)")
             else:
@@ -601,10 +1336,25 @@ class BlogBuilder:
         return re.sub(r"\[@([a-zA-Z0-9_\-; @]+)\]", repl, content)
 
     @staticmethod
+    def _replace_citations_latex(content, bib_map):
+        """Replace [@key] and [@key1; @key2] with LaTeX superscript refs."""
+        def repl(match):
+            inner = match.group(1)
+            keys = [k.strip().lstrip("@") for k in inner.split(";")]
+            nums = []
+            for k in keys:
+                if k in bib_map:
+                    nums.append(str(bib_map[k]))
+            if nums:
+                return f"\\textsuperscript{{[{','.join(nums)}]}}"
+            return match.group(0)
+        return re.sub(r"\[@([a-zA-Z0-9_\-; @]+)\]", repl, content)
+
+    @staticmethod
     def _preprocess_equations(content):
         """Pre-process equation blocks before markdown conversion.
 
-        - Wraps \\begin{equation} / \\begin{align} in \\[ ... \\] for arithmatex.
+        - Converts equation/align environments to display math for arithmatex.
         - Extracts \\label{eq:key} → builds label-to-number map.
         - Adds \\tag{N} for KaTeX equation numbering.
         - Inserts anchor <a id="eq:key"></a> before labeled equations.
@@ -618,7 +1368,6 @@ class BlogBuilder:
         def replace_eq(match):
             nonlocal eq_counter
             full = match.group(0)
-            env = match.group(1)
             body = match.group(2)
 
             # Skip if already inside display-math delimiters
@@ -643,9 +1392,8 @@ class BlogBuilder:
             return (
                 f'{anchor}'
                 f'$$\n'
-                f'\\begin{{{env}}}\\tag{{{eq_counter}}}\n'
                 f'{body.strip()}\n'
-                f'\\end{{{env}}}\n'
+                f'\\tag{{{eq_counter}}}\n'
                 f'$$'
             )
 
@@ -683,11 +1431,18 @@ class BlogBuilder:
             rest = match.group(3)
             fig_counter += 1
             fig_aliases[key] = fig_counter
+            # Parse width specifier: |width=X% or |width=Xpx
+            width_style = ""
+            wm = re.search(r'\|width=([^"]+)$', caption)
+            if wm:
+                w = wm.group(1).strip()
+                caption = caption[:wm.start()]
+                width_style = f' style="width: {w}"'
             src_m = re.search(r'src="([^"]*)"', rest)
             src = src_m.group(1) if src_m else ""
             return (
                 f'<figure id="fig:{key}" class="numbered-fig">\n'
-                f'  <img src="{src}" alt="{caption}">\n'
+                f'  <img src="{src}" alt="{caption}"{width_style}>\n'
                 f'  <figcaption>图 {fig_counter}：{caption}</figcaption>\n'
                 f'</figure>'
             )
@@ -736,15 +1491,193 @@ class BlogBuilder:
 
         return body
 
+    # ------------------------------------------------------------------ #
+    # Zhihu Markdown export
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _preprocess_equations_for_markdown(content):
+        """Convert LaTeX equation/align environments to plain display math.
+
+        This is for platforms such as Zhihu that accept normal Markdown plus
+        $$...$$ math, but do not understand the blog's custom equation labels.
+
+        Returns: (processed_content, eq_labels: dict)
+        """
+        eq_labels = {}
+        eq_counter = 0
+
+        def replace_eq(match):
+            nonlocal eq_counter
+            env = match.group(1)
+            body = match.group(2).strip()
+
+            eq_counter += 1
+
+            label_m = re.search(r'\\label\{eq:([a-zA-Z0-9_-]+)\}', body)
+            if label_m:
+                eq_labels[label_m.group(1)] = eq_counter
+                body = body[:label_m.start()] + body[label_m.end():]
+                body = body.strip()
+
+            if env == "align":
+                body = "\\begin{aligned}\n" + body + "\n\\end{aligned}"
+
+            return f"\n\n$$\n{body}\n\\tag{{{eq_counter}}}\n$$\n\n"
+
+        content = re.sub(
+            r'\\begin\{(equation|align)\}(.*?)\\end\{\1\}',
+            replace_eq,
+            content,
+            flags=re.DOTALL,
+        )
+        return content, eq_labels
+
+    @staticmethod
+    def _replace_citations_plain_markdown(content, bib_map):
+        """Replace [@key] and [@key1; @key2] with ordinary [N] text."""
+        def repl(match):
+            inner = match.group(1)
+            keys = [k.strip().lstrip("@") for k in inner.split(";")]
+            nums = [str(bib_map[k]) for k in keys if k in bib_map]
+            if nums:
+                return "".join(f"[{n}]" for n in nums)
+            return match.group(0)
+
+        return re.sub(r"\[@([a-zA-Z0-9_\-; @]+)\]", repl, content)
+
+    @staticmethod
+    def _strip_width_from_alt(alt):
+        """Remove trailing |width=... from image alt text."""
+        width_m = re.search(r"\|width=[^|]+$", alt)
+        if width_m:
+            return alt[:width_m.start()]
+        return alt
+
+    def _zhihu_asset_path(self, path_text):
+        """Rewrite local asset paths relative to public/zhihu/*.md."""
+        if re.match(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|/|#)", path_text):
+            return path_text
+        if path_text.startswith("../"):
+            return path_text
+        return "../" + path_text
+
+    def _process_numbered_refs_markdown(self, content, eq_labels=None):
+        """Resolve blog-specific figure/table/equation references to text."""
+        if eq_labels is None:
+            eq_labels = {}
+
+        fig_counter = 0
+        tbl_counter = 0
+        fig_aliases = {}
+        tbl_aliases = {}
+
+        def replace_fig(match):
+            nonlocal fig_counter
+            alt = match.group(1)
+            path = self._zhihu_asset_path(match.group(2))
+
+            fig_m = re.match(r"fig:([a-zA-Z0-9_-]+)\|(.*)$", alt)
+            if not fig_m:
+                plain_alt = self._strip_width_from_alt(alt)
+                return f"![{plain_alt}]({path})"
+
+            key = fig_m.group(1)
+            caption = self._strip_width_from_alt(fig_m.group(2)).strip()
+            fig_counter += 1
+            fig_aliases[key] = fig_counter
+            return f"![图 {fig_counter}：{caption}]({path})\n\n图 {fig_counter}：{caption}"
+
+        content = re.sub(
+            r"!\[([^\]]*)\]\(([^)]+)\)",
+            replace_fig,
+            content,
+        )
+
+        def replace_tbl_marker(match):
+            nonlocal tbl_counter
+            key = match.group(1)
+            caption = match.group(2).strip()
+            tbl_counter += 1
+            tbl_aliases[key] = tbl_counter
+            return f"表 {tbl_counter}：{caption}\n"
+
+        content = re.sub(
+            r"^\s*\[@tbl:([a-zA-Z0-9_-]+)\|([^\]]+)\]\s*$",
+            replace_tbl_marker,
+            content,
+            flags=re.MULTILINE,
+        )
+
+        def replace_ref(match):
+            prefix = match.group(1)
+            key = match.group(2)
+            if prefix == "fig" and key in fig_aliases:
+                return f"图 {fig_aliases[key]}"
+            if prefix == "tbl" and key in tbl_aliases:
+                return f"表 {tbl_aliases[key]}"
+            if prefix == "eq" and key in eq_labels:
+                return f"公式 {eq_labels[key]}"
+            return match.group(0)
+
+        return re.sub(r"\[@(fig|tbl|eq):([a-zA-Z0-9_-]+)\]", replace_ref, content)
+
+    def _post_to_zhihu_markdown(self, post):
+        """Compile one post to portable Markdown for Zhihu import."""
+        raw = frontmatter.load(str(post["path"]))
+        macros = self._latex_macros_for_metadata(raw.metadata, post["path"])
+        metadata = self._expand_latex_macros_in_metadata(raw.metadata, macros, post["path"])
+
+        bib_entries = self._normalize_bibliography(metadata.get("bibliography", []))
+        bib_map = {key: i for i, (key, _) in enumerate(bib_entries, start=1)}
+
+        content = self._expand_latex_macros_in_markdown(
+            raw.content,
+            macros,
+            post["path"],
+        ).strip()
+        content = self._replace_citations_plain_markdown(content, bib_map)
+        content, eq_labels = self._preprocess_equations_for_markdown(content)
+        content = self._process_numbered_refs_markdown(content, eq_labels)
+
+        title = metadata.get("title", post.get("title", "Untitled"))
+        parts = [f"# {title}"]
+
+        abstract = metadata.get("abstract", "")
+        if abstract:
+            parts.append(f"> {abstract}")
+
+        parts.append(content)
+
+        if bib_entries:
+            refs = ["## 参考文献"]
+            for key, text in bib_entries:
+                refs.append(f"[{bib_map[key]}] {text}")
+            parts.append("\n".join(refs))
+
+        text = "\n\n".join(part.strip() for part in parts if part and part.strip())
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.rstrip() + "\n"
+
+    def _build_zhihu_markdown(self, post):
+        out_dir = self.output_dir / "zhihu"
+        self._ensure_dir(out_dir)
+        filename = f"{post.get('slug') or post['id']}.md"
+        out = out_dir / filename
+        out.write_text(self._post_to_zhihu_markdown(post), encoding="utf-8")
+        print(f"  [ZH]  {out.relative_to(self.output_dir)}")
+
     def _parse_markdown(self, path: Path):
         post = frontmatter.load(str(path))
+        macros = self._latex_macros_for_metadata(post.metadata, path)
+        metadata = self._expand_latex_macros_in_metadata(post.metadata, macros, path)
 
-        raw_bib = post.metadata.get("bibliography", [])
+        raw_bib = metadata.get("bibliography", [])
         bib_entries = self._normalize_bibliography(raw_bib)
         bib_map = {key: i for i, (key, _) in enumerate(bib_entries, start=1)}
 
-        # Preprocess: [@key] → [^N]
-        content = self._preprocess_citations(post.content, bib_map)
+        # Preprocess: expand custom math macros, then [@key] → [^N]
+        content = self._expand_latex_macros_in_markdown(post.content, macros, path)
+        content = self._preprocess_citations(content, bib_map)
 
         # Preprocess: number equations and build label→number map
         content, eq_labels = self._preprocess_equations(content)
@@ -761,24 +1694,25 @@ class BlogBuilder:
         self.md.reset()
 
         meta = {
-            **post.metadata,
-            "title": post.metadata.get("title", "Untitled"),
-            "date": post.metadata.get("date"),
-            "updated": post.metadata.get("updated"),
-            "authors": post.metadata.get("authors", []),
-            "abstract": post.metadata.get("abstract", ""),
-            "keywords": post.metadata.get("keywords", []),
-            "tags": post.metadata.get("tags", []),
-            "category": post.metadata.get("category", "Uncategorized"),
-            "doi": post.metadata.get("doi", ""),
-            "bibliography": post.metadata.get("bibliography", []),
-            "banner": post.metadata.get("banner", ""),
-            "draft": post.metadata.get("draft", False),
+            **metadata,
+            "title": metadata.get("title", "Untitled"),
+            "date": metadata.get("date"),
+            "updated": metadata.get("updated"),
+            "authors": metadata.get("authors", []),
+            "abstract": metadata.get("abstract", ""),
+            "keywords": metadata.get("keywords", []),
+            "tags": metadata.get("tags", []),
+            "category": metadata.get("category", "Uncategorized"),
+            "doi": metadata.get("doi", ""),
+            "bibliography": metadata.get("bibliography", []),
+            "banner": metadata.get("banner", ""),
+            "draft": metadata.get("draft", False),
             "id": self._article_id(path),
-            "slug": post.metadata.get("slug", self._slugify(post.metadata.get("title", "untitled"))),
+            "slug": metadata.get("slug", self._slugify(metadata.get("title", "untitled"))),
             "path": path,
             "body": body,
             "toc": toc,
+            "pdf_available": False,
         }
 
         if meta["date"] and isinstance(meta["date"], str):
@@ -803,11 +1737,12 @@ class BlogBuilder:
                 continue
             meta["url"] = f"posts/{meta['id']}.html"
             self.posts.append(meta)
-            # Build PDF if source changed
-            if self._should_rebuild_pdf(meta):
-                self._build_pdf(meta)
-            # Always copy cached PDF to output (public/ is wiped each build)
-            self._copy_pdf_to_output(meta)
+            # Build PDF if source changed (skip in dev mode)
+            if not self.skip_pdf:
+                if self._should_rebuild_pdf(meta):
+                    self._build_pdf(meta)
+                # Always copy cached PDF to output (public/ is wiped each build)
+                self._copy_pdf_to_output(meta)
 
         self.posts.sort(key=lambda x: x["date"] or datetime.min, reverse=True)
 
@@ -837,7 +1772,6 @@ class BlogBuilder:
         depth = len(output_path.relative_to(self.output_dir).parts) - 1
         site_root = "../" * depth if depth > 0 else ""
         context.setdefault("site_root", site_root)
-        context.setdefault("search_json", self._search_json)
         tmpl = self.jinja.get_template(template_name)
         html = tmpl.render(**context)
         self._ensure_dir(output_path.parent)
@@ -846,11 +1780,10 @@ class BlogBuilder:
 
     @staticmethod
     def _fix_relative_paths(html: str, site_root: str) -> str:
-        import re
         def repl(match):
             attr = match.group(1)
             path = match.group(2)
-            if path.startswith(("http://", "https://", "//", "#", "data:")):
+            if path.startswith(("//", "#", "/")) or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", path):
                 return match.group(0)
             if path.startswith(site_root):
                 return match.group(0)
@@ -957,7 +1890,7 @@ class BlogBuilder:
         ctx = {
             "config": self.config,
             "posts": self.posts[:20],
-            "build_date": datetime.utcnow(),
+            "build_date": datetime.now(timezone.utc),
         }
         out = self.output_dir / "feed.xml"
         self._render("rss.xml", ctx, out)
@@ -1008,9 +1941,10 @@ class BlogBuilder:
         print("\n[2/5] Copying static assets...")
         self._copy_static()
 
-        print("\n[3/5] Rendering posts & pages...")
+        print("\n[3/5] Rendering posts, pages & Zhihu markdown...")
         for p in self.posts:
             self._build_post(p)
+            self._build_zhihu_markdown(p)
         for p in self.pages:
             self._build_page(p)
 
@@ -1032,7 +1966,11 @@ class BlogBuilder:
 
 
 def main():
-    builder = BlogBuilder()
+    import argparse
+    parser = argparse.ArgumentParser(description="LaTeX-style academic blog generator")
+    parser.add_argument("--no-pdf", action="store_true", help="Skip PDF compilation (for dev preview)")
+    args = parser.parse_args()
+    builder = BlogBuilder(skip_pdf=args.no_pdf)
     builder.build()
 
 
